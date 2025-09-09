@@ -10,7 +10,8 @@ python legged_gym/scripts/train.py --task=h1 --headless --num_envs=4096 --max_it
 python legged_gym/scripts/play.py --task=h1 
 
 # h1_m training
-python legged_gym/scripts/train.py --task=h1_m  --num_envs=4096 --max_iterations=2000 --headless --run_name=AC
+python legged_gym/scripts/train.py --task=h1_m  --num_envs=4096 --max_iterations=2000 --headless --sim_device=cuda:2 --rl_device=cuda:2 --run_name=CVAE
+python legged_gym/scripts/train.py --task=h1_m  --num_envs=4096 --max_iterations=2000 --headless --sim_device=cuda:3 --rl_device=cuda:3 --run_name=CVAE
 
 # h1_m check
 python legged_gym/scripts/play.py --task=h1_m 

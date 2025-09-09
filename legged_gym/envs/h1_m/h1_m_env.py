@@ -68,10 +68,11 @@ class H1_mRobot(LeggedRobot):
         self.phase_left = self.phase
         self.phase_right = (self.phase + offset) % 1
         self.leg_phase = torch.cat([self.phase_left.unsqueeze(1), self.phase_right.unsqueeze(1)], dim=-1)
-        
+        self.compute_recon_obs()
+
         return super()._post_physics_step_callback()
     
-    
+
     def compute_observations(self):
         """ Computes observations
         """
@@ -85,13 +86,12 @@ class H1_mRobot(LeggedRobot):
                              self.dof_vel * self.obs_scales.dof_vel,
                              self.actions), dim=-1)
 
-        # 初始化堆叠buffer
         if self._obs_stack_buf is None:
             self._obs_stack_buf = torch.zeros(self.obs_stack_n, self.num_envs, cur_obs.shape[-1], device=cur_obs.device)
-        # 更新堆叠buffer（前往后滚动）
+
         self._obs_stack_buf = torch.roll(self._obs_stack_buf, shifts=1, dims=0)
         self._obs_stack_buf[0] = cur_obs
-        # 堆叠所有帧，按环境维度拼接
+
         stacked_obs = self._obs_stack_buf.permute(1, 0, 2).reshape(self.num_envs, -1)
         self.obs_buf = torch.cat((stacked_obs, sin_phase, cos_phase), dim=-1)
         self.privileged_obs_buf = torch.cat((  self.base_lin_vel * self.obs_scales.lin_vel,
@@ -104,10 +104,20 @@ class H1_mRobot(LeggedRobot):
                         sin_phase,
                         cos_phase
                         ),dim=-1)
-        # add perceptive inputs if not blind
+
         # add noise if needed
         if self.add_noise:
             self.obs_buf += (2 * torch.rand_like(self.obs_buf) - 1) * self.noise_scale_vec
+
+    def compute_recon_obs(self):
+        """ Computes observations for next step prediction (CVAE)
+        """
+        recon_obs = torch.cat((self.base_ang_vel * self.obs_scales.ang_vel,
+                             self.projected_gravity,
+                             (self.dof_pos - self.default_dof_pos) * self.obs_scales.dof_pos,
+                             self.dof_vel * self.obs_scales.dof_vel,
+                             ), dim=-1) # 26
+        self.extras['obs_next_d'] = recon_obs
 
     def reset_idx(self, env_ids):
         super().reset_idx(env_ids)

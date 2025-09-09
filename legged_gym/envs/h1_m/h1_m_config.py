@@ -33,6 +33,7 @@ class H1_mRoughCfg( LeggedRobotCfg ):
         obs_stack_n = 5
         num_observations = obs_stack_n*39 + 2
         num_privileged_obs = 44
+        num_recon_observations = 26
         num_actions = 10
       
 
@@ -105,25 +106,34 @@ class H1_mRoughCfg( LeggedRobotCfg ):
 
 class H1_mRoughCfgPPO( LeggedRobotCfgPPO ):
     class policy:
+        num_recon_observations = H1_mRoughCfg.env.num_recon_observations
         init_noise_std = 0.8
-        actor_hidden_dims = [256, 256]
-        critic_hidden_dims = [256, 256]
+        actor_hidden_dims = [512, 512]
+        critic_hidden_dims = [512, 512]
         activation = 'elu' # can be elu, relu, selu, crelu, lrelu, tanh, sigmoid
+        # CVAE
+        encoder_hidden_dims = [512, 256]
+        decoder_hidden_dims = [256, 512]
         # only for 'ActorCriticRecurrent':
         rnn_type = 'lstm'
         rnn_hidden_size = 64
         rnn_num_layers = 1
     class algorithm( LeggedRobotCfgPPO.algorithm ):
+        num_recon_observations = H1_mRoughCfg.env.num_recon_observations
         entropy_coef = 0.01
+        learning_rate = 3e-4
+        cvae_learning_rate = 1e-3
+        gamma = 0.99
+        lam = 0.95
         # CVAE
-        # recon_weight = 0.000
-        # vt_weight = 0.000
-        # kl_weight = 0.000
+        recon_weight = 1.000
+        vt_weight = 1.000
+        kl_weight = 0.001
     class runner( LeggedRobotCfgPPO.runner ):
         save_interval = 200
-        policy_class_name = "ActorCritic"
-        algorithm_class_name = 'PPO'
-        num_steps_per_env = 12 # per iteration
+        policy_class_name = "ActorCriticCVAE"
+        algorithm_class_name = 'PPO_CVAE'
+        num_steps_per_env = 24 # per iteration
         max_iterations = 1500 # number of policy updates
         run_name = ''
         experiment_name = 'h1_m'

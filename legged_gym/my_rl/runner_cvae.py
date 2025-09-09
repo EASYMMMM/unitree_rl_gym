@@ -137,8 +137,6 @@ class OnPolicyRunner_WB(OnPolicyRunner):
         cur_reward_sum = torch.zeros(self.env.num_envs, dtype=torch.float, device=self.device)
         cur_episode_length = torch.zeros(self.env.num_envs, dtype=torch.float, device=self.device)
 
-        # 可选：从 policy_cfg 读取 vt_indices（例如 [ix_vx, ix_vy, ix_vz]）
-        vt_indices = self.policy_cfg.get("vt_indices", None)
 
         tot_iter = self.current_learning_iteration + num_learning_iterations
         for it in range(self.current_learning_iteration, tot_iter):
@@ -162,7 +160,7 @@ class OnPolicyRunner_WB(OnPolicyRunner):
                             rewards.to(self.device),
                             dones.to(self.device),
                             infos,
-                            next_obs=obs_next_d,
+                            next_obs=infos['obs_next_d'],
                             vt_target=(vt_target.to(self.device) if vt_target is not None else None),
                         )
                     except TypeError:
@@ -202,6 +200,19 @@ class OnPolicyRunner_WB(OnPolicyRunner):
 
             # log
             if self.log_dir is not None:
+                # 兼容CVAE PPO，记录cvae_loss和vt_recon_loss
+                cvae_loss = getattr(self.alg, "last_cvae_loss", None)
+                vt_recon_loss = getattr(self.alg, "last_vt_recon_loss", None)
+                obs_recon_loss = getattr(self.alg, "last_obs_recon_loss", None)
+                cvae_kl_loss = getattr(self.alg, "last_kl_loss", None)
+                if cvae_loss is not None:
+                    self.writer.add_scalar('Loss/cvae_loss', cvae_loss, it)
+                if vt_recon_loss is not None:
+                    self.writer.add_scalar('Loss/vt_recon_loss', vt_recon_loss, it)
+                if obs_recon_loss is not None:
+                    self.writer.add_scalar('Loss/obs_recon_loss', obs_recon_loss, it)
+                if cvae_kl_loss is not None:
+                    self.writer.add_scalar('Loss/cvae_kl_loss', cvae_kl_loss, it)
                 self.log(locals())
             if it % self.save_interval == 0:
                 self.save(os.path.join(self.log_dir, f'model_{it}.pt'))
@@ -209,3 +220,36 @@ class OnPolicyRunner_WB(OnPolicyRunner):
 
         self.current_learning_iteration += num_learning_iterations
         self.save(os.path.join(self.log_dir, f'model_{self.current_learning_iteration}.pt'))
+
+    # 兼容原版AC和CVAE算法的保存
+    def save(self, path, infos=None):
+        save_dict = {
+            'model_state_dict': self.alg.actor_critic.state_dict(),
+            'iter': self.current_learning_iteration,
+            'infos': infos,
+        }
+        # 原版PPO有optimizer，CVAE有optim_rl/optim_cvae
+        if hasattr(self.alg, 'optimizer'):
+            save_dict['optimizer_state_dict'] = self.alg.optimizer.state_dict()
+        else:
+            if hasattr(self.alg, 'optim_rl'):
+                save_dict['optim_rl_state_dict'] = self.alg.optim_rl.state_dict()
+            if hasattr(self.alg, 'optim_cvae'):
+                save_dict['optim_cvae_state_dict'] = self.alg.optim_cvae.state_dict()
+        torch.save(save_dict, path)
+
+    # 兼容原版AC和CVAE算法的加载
+    def load(self, path):
+        checkpoint = torch.load(path, map_location=self.device)
+        self.alg.actor_critic.load_state_dict(checkpoint['model_state_dict'])
+        # 原版PPO有optimizer，CVAE有optim_rl/optim_cvae
+        if hasattr(self.alg, 'optimizer') and 'optimizer_state_dict' in checkpoint:
+            self.alg.optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+        else:
+            if hasattr(self.alg, 'optim_rl') and 'optim_rl_state_dict' in checkpoint:
+                self.alg.optim_rl.load_state_dict(checkpoint['optim_rl_state_dict'])
+            if hasattr(self.alg, 'optim_cvae') and 'optim_cvae_state_dict' in checkpoint:
+                self.alg.optim_cvae.load_state_dict(checkpoint['optim_cvae_state_dict'])
+        if 'iter' in checkpoint:
+            self.current_learning_iteration = checkpoint['iter']
+        return checkpoint.get('infos', None)

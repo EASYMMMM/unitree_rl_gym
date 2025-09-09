@@ -25,7 +25,14 @@ class RolloutStorageCVAE:
         def clear(self):
             self.__init__()
 
-    def __init__(self, num_envs, num_transitions_per_env, obs_shape, privileged_obs_shape, actions_shape, device='cpu'):
+    def __init__(self, 
+                 num_envs, 
+                 num_transitions_per_env,
+                 obs_shape, 
+                 privileged_obs_shape, 
+                 actions_shape, 
+                 device='cpu',
+                 num_recon_observations=29):
         self.device = device
 
         self.obs_shape = obs_shape
@@ -55,7 +62,7 @@ class RolloutStorageCVAE:
         self.sigma = torch.zeros(T, N, *actions_shape, device=self.device)
 
         # NEW: CVAE 需要的
-        self.next_observations = torch.zeros(T, N, obs_dim, device=self.device)  # o_{t+1} 或 Δo
+        self.next_observations = torch.zeros(T, N, num_recon_observations, device=self.device)  # o_{t+1} 或 Δo
         self.vt_targets = None  # 惰性创建（直到第一次 add_transitions 带来了 vt_target）
 
         self.num_transitions_per_env = T

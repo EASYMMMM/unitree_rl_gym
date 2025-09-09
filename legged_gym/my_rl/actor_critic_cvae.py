@@ -38,8 +38,6 @@ class Encoder(nn.Module):
         std_z = torch.exp(logstd_z)
         # reparameterize
         z = mu_z + std_z * torch.randn_like(std_z)
-        # TODO: 纯MLP测试
-        z = mu_z
         return vt, z, mu_z, logstd_z
 
 
@@ -83,13 +81,14 @@ class ActorCriticCVAE(ActorCritic):
                  # 下面是 CVAE 的新增超参
                  vt_dim: int = 3,
                  z_dim: int = 16,
-                 enc_hidden=(256, 256),
-                 dec_hidden=(256, 256),
+                 encoder_hidden_dims=(256, 256),
+                 decoder_hidden_dims=(256, 256),
                  # 与父类保持一致的可配项
                  actor_hidden_dims=(256, 256, 256),
                  critic_hidden_dims=(256, 256, 256),
                  activation: str = "elu",
                  init_noise_std: float = 1.0,
+                 num_recon_observations = 29,
                  **kwargs):
         # 先用父类构造（含 critic、可学习的 self.std 参数等）
         super().__init__(num_actor_obs=num_actor_obs,
@@ -107,9 +106,11 @@ class ActorCriticCVAE(ActorCritic):
         self.z_dim = z_dim
         self.activation = activation
 
+        self.log_std = nn.Parameter(torch.full((num_actions,), math.log(init_noise_std)))
+
         # CVAE-Actor 组件
-        self.encoder = Encoder(num_actor_obs, vt_dim, z_dim, enc_hidden, activation)
-        self.decoder = Decoder(vt_dim, z_dim, num_actor_obs, dec_hidden, activation)  # 先挂上，下一步接损失
+        self.encoder = Encoder(num_actor_obs, vt_dim, z_dim, encoder_hidden_dims, activation)
+        self.decoder = Decoder(vt_dim, z_dim, num_recon_observations, decoder_hidden_dims, activation)  # 先挂上，下一步接损失
         self.policy_cvae = PolicyHead(num_actor_obs, vt_dim, z_dim, num_actions, actor_hidden_dims, activation)
 
         print('Encoder MLP:', {self.encoder})
@@ -138,7 +139,7 @@ class ActorCriticCVAE(ActorCritic):
           vt, z, mu_z, logstd_z: 便于后续扩展（当前 PPO 未用）
         """
         vt, z, mu_z, logstd_z = self.encoder(observations)
-        mu = self.policy_cvae(observations, vt, z)  # 动作均值
+        mu = self.policy_cvae(observations, vt, mu_z)  # 动作均值
         std = self.std.expand_as(mu)                # 父类已注册为可学习噪声 std（形状 [act_dim]）
         return mu, std, vt, z, mu_z, logstd_z
 
@@ -156,6 +157,7 @@ class ActorCriticCVAE(ActorCritic):
           - 同时在对象上缓存：self.action_mean / self.action_std / self.entropy
         """
         mu, std, _, _, _, _ = self._actor_forward(observations)
+        std = std.clamp_min(1e-3)
         dist = Normal(mu, std)
         actions = dist.sample()
         # 缓存分布属性（PPO.update 会直接读）
