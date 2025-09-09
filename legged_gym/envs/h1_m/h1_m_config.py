@@ -126,7 +126,7 @@ class H1_mRoughCfgPPO( LeggedRobotCfgPPO ):
         gamma = 0.99
         lam = 0.95
         # CVAE
-        recon_weight = 1.000
+        recon_weight = 10.000
         vt_weight = 1.000
         kl_weight = 0.001
     class runner( LeggedRobotCfgPPO.runner ):
