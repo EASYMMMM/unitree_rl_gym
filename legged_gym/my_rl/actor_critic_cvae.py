@@ -192,6 +192,23 @@ class ActorCriticCVAE(ActorCritic):
     def entropy(self):
         return self._entropy
 
+    # --------- 等效的actor，用于兼容play.py等需要.actor的场景 ---------
+    @property
+    def actor(self):
+        class _Actor(nn.Module):
+            def __init__(self, encoder, policy_cvae, std):
+                super().__init__()
+                self.encoder = encoder
+                self.policy_cvae = policy_cvae
+                self.std = std
+            def forward(self, obs):
+                vt, z, mu_z, logstd_z = self.encoder(obs)
+                mu = self.policy_cvae(obs, vt, z)
+                std = self.std.expand_as(mu)
+                return mu, std
+        # 返回一个包装类，行为与原actor一致
+        return _Actor(self.encoder, self.policy_cvae, self.std)
+
     def evaluate(self, critic_observations, masks=None, hidden_states=None):
         """
         仅做 critic 的评估（不更新），与 rsl_rl 的约定保持一致。

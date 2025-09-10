@@ -122,7 +122,7 @@ class H1_mRoughCfgPPO( LeggedRobotCfgPPO ):
         num_recon_observations = H1_mRoughCfg.env.num_recon_observations
         entropy_coef = 0.01
         learning_rate = 3e-4
-        cvae_learning_rate = 1e-3
+        cvae_learning_rate = 1e-4
         gamma = 0.99
         lam = 0.95
         # CVAE

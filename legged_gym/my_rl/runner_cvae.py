@@ -149,8 +149,8 @@ class OnPolicyRunner_WB(OnPolicyRunner):
                     obs_next, privileged_obs_next, rewards, dones, infos = self.env.step(actions)
                     critic_obs_next = privileged_obs_next if privileged_obs_next is not None else obs_next
                     # TODO: vt or vt+1
-                    # vt_target = privileged_obs_next[..., 0:3]
-                    vt_target = critic_obs[..., 0:3] 
+                    vt_target = privileged_obs_next[..., 0:3]
+                    # vt_target = critic_obs[..., 0:3] 
                     # 传入 PPO / PPO_CVAE：把 next_obs 与 vt_target 一并记录
                     obs_next_d = obs_next.to(self.device)
                     critic_obs_next_d = critic_obs_next.to(self.device)
