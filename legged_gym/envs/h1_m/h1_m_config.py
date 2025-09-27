@@ -30,9 +30,10 @@ class H1_mRoughCfg( LeggedRobotCfg ):
 
     class env(LeggedRobotCfg.env):
         # 3 + 3 + 3 + 10 + 10 + 10 + 2 = 41
-        obs_stack_n = 5
+        obs_stack_n = 6
+        priv_obs_stack_n = 3
         num_observations = obs_stack_n*39 + 2
-        num_privileged_obs = 44
+        num_privileged_obs = priv_obs_stack_n*44
         num_recon_observations = 26
         num_actions = 10
       

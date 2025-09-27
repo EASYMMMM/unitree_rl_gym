@@ -11,7 +11,9 @@ class H1_mRobot(LeggedRobot):
     def __init__(self, *args,  **kwargs):
         super().__init__(*args, **kwargs)
         self.obs_stack_n = self.cfg.env.obs_stack_n
+        self.priv_obs_stack_n = self.cfg.env.priv_obs_stack_n
         self._obs_stack_buf = None
+        self._priv_stack_buf = None
 
 
     def _get_noise_scale_vec(self, cfg):
@@ -94,7 +96,9 @@ class H1_mRobot(LeggedRobot):
 
         stacked_obs = self._obs_stack_buf.permute(1, 0, 2).reshape(self.num_envs, -1)
         self.obs_buf = torch.cat((stacked_obs, sin_phase, cos_phase), dim=-1)
-        self.privileged_obs_buf = torch.cat((  self.base_lin_vel * self.obs_scales.lin_vel,
+
+        # 特权观测也做帧堆叠
+        cur_priv = torch.cat((  self.base_lin_vel * self.obs_scales.lin_vel,
                         self.base_ang_vel  * self.obs_scales.ang_vel,
                         self.projected_gravity,
                         self.commands[:, :3] * self.commands_scale,
@@ -104,6 +108,12 @@ class H1_mRobot(LeggedRobot):
                         sin_phase,
                         cos_phase
                         ),dim=-1)
+        if not hasattr(self, '_priv_stack_buf') or self._priv_stack_buf is None:
+            self._priv_stack_buf = torch.zeros(self.priv_obs_stack_n, self.num_envs, cur_priv.shape[-1], device=cur_priv.device)
+        self._priv_stack_buf = torch.roll(self._priv_stack_buf, shifts=1, dims=0)
+        self._priv_stack_buf[0] = cur_priv
+        stacked_priv = self._priv_stack_buf.permute(1, 0, 2).reshape(self.num_envs, -1)
+        self.privileged_obs_buf = stacked_priv
 
         # add noise if needed
         if self.add_noise:
@@ -131,6 +141,9 @@ class H1_mRobot(LeggedRobot):
                                 self.actions), dim=-1)
             self._obs_stack_buf[:, env_ids, :] = 0.0
             self._obs_stack_buf[0][env_ids] = cur_obs[env_ids]
+        # 重置特权观测帧堆叠
+        if hasattr(self, '_priv_stack_buf') and self._priv_stack_buf is not None:
+            self._priv_stack_buf[:, env_ids, :] = 0.0
 
     def _reward_contact(self):
         res = torch.zeros(self.num_envs, dtype=torch.float, device=self.device)
