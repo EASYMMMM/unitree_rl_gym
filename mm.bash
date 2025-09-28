@@ -22,7 +22,7 @@ python legged_gym/scripts/train.py --task=g1 --headless --num_envs=4096 --max_it
 python legged_gym/scripts/play.py --task=g1
 
 # g1_m training
-python legged_gym/scripts/train.py --task=g1_m  --num_envs=4096 --max_iterations=20000 --headless --sim_device=cuda:2 --rl_device=cuda:2 --run_name=CVAE_vt
+python legged_gym/scripts/train.py --task=g1_m  --num_envs=4096 --max_iterations=10000 --headless --sim_device=cuda:2 --rl_device=cuda:2 --run_name=CVAE_vt
 python legged_gym/scripts/train.py --task=g1_m  --num_envs=4096 --max_iterations=2000 --headless --sim_device=cuda:3 --rl_device=cuda:3 --run_name=CVAE
 
 # g1_m check

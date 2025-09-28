@@ -65,16 +65,16 @@ class G1_mRobot(LeggedRobot):
                              (self.dof_pos - self.default_dof_pos) * self.obs_scales.dof_pos,
                              self.dof_vel * self.obs_scales.dof_vel,
                              self.actions,
-                             sin_phase,
-                             cos_phase,
                              ), dim=-1)
+        
         if self._obs_stack_buf is None:
             self._obs_stack_buf = torch.zeros(self.obs_stack_n, self.num_envs, cur_obs.shape[-1], device=cur_obs.device)
+
         self._obs_stack_buf = torch.roll(self._obs_stack_buf, shifts=1, dims=0)
         self._obs_stack_buf[0] = cur_obs
 
         stacked_obs = self._obs_stack_buf.permute(1, 0, 2).reshape(self.num_envs, -1)
-        self.obs_buf = stacked_obs 
+        self.obs_buf = torch.cat((stacked_obs, sin_phase, cos_phase), dim=-1)
        
         cur_priv = torch.cat((  self.base_lin_vel * self.obs_scales.lin_vel,
                         self.base_ang_vel  * self.obs_scales.ang_vel,
