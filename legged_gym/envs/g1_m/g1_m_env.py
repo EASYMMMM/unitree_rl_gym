@@ -107,14 +107,14 @@ class G1_mRobot(LeggedRobot):
     def reset_idx(self, env_ids):
         super().reset_idx(env_ids)
         if self._obs_stack_buf is not None:
+            cur_obs = torch.cat((self.base_ang_vel * self.obs_scales.ang_vel,
+                                self.projected_gravity,
+                                self.commands[:, :3] * self.commands_scale,
+                                (self.dof_pos - self.default_dof_pos) * self.obs_scales.dof_pos,
+                                self.dof_vel * self.obs_scales.dof_vel,
+                                self.actions), dim=-1)   
             self._obs_stack_buf[:, env_ids, :] = 0.0
-            # cur_obs = torch.cat((self.base_ang_vel * self.obs_scales.ang_vel,
-            #                     self.projected_gravity,
-            #                     self.commands[:, :3] * self.commands_scale,
-            #                     (self.dof_pos - self.default_dof_pos) * self.obs_scales.dof_pos,
-            #                     self.dof_vel * self.obs_scales.dof_vel,
-            #                     self.actions), dim=-1)     
-            # self._obs_stack_buf[0][env_ids] = cur_obs[env_ids]
+            self._obs_stack_buf[0][env_ids] = cur_obs[env_ids]
         if hasattr(self, '_priv_stack_buf') and self._priv_stack_buf is not None:
             self._priv_stack_buf[:, env_ids, :] = 0.0
 

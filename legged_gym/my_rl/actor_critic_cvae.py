@@ -203,7 +203,7 @@ class ActorCriticCVAE(ActorCritic):
                 self.std = std
             def forward(self, obs):
                 vt, z, mu_z, logstd_z = self.encoder(obs)
-                mu = self.policy_cvae(obs, vt, z)
+                mu = self.policy_cvae(obs, vt, mu_z)
                 std = self.std.expand_as(mu)
                 return mu, std
         # 返回一个包装类，行为与原actor一致

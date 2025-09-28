@@ -190,7 +190,9 @@ class PPO_CVAE:
 
                 if has_recon:
                     next_hat = ac.decoder(vt2, z2)
-                    recon = F.mse_loss(next_hat, next_obs_b)
+                    # recon = F.mse_loss(next_hat, next_obs_b)
+                    # FIXME: Huber loss 更鲁棒
+                    recon = F.smooth_l1_loss(next_hat, next_obs_b, beta=0.05)
                     losses.append(self.recon_weight * recon)
                     obs_recon_loss = recon.item()
                 if has_vt:

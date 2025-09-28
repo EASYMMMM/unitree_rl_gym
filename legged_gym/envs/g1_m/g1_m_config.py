@@ -85,12 +85,12 @@ class G1_mRoughCfgPPO( LeggedRobotCfgPPO ):
     class policy:
         num_recon_observations = G1_mRoughCfg.env.num_recon_observations
         init_noise_std = 0.8
-        actor_hidden_dims = [512, 512]
-        critic_hidden_dims = [512, 512]
+        actor_hidden_dims = [1024, 512]
+        critic_hidden_dims = [1024, 512]
         activation = 'elu'
         # CVAE
-        encoder_hidden_dims = [512, 256]
-        decoder_hidden_dims = [256, 512]
+        encoder_hidden_dims = [1024, 512]
+        decoder_hidden_dims = [512, 1024]
         rnn_type = 'lstm'
         rnn_hidden_size = 64
         rnn_num_layers = 1
@@ -101,7 +101,7 @@ class G1_mRoughCfgPPO( LeggedRobotCfgPPO ):
         cvae_learning_rate = 1e-4
         gamma = 0.99
         lam = 0.95
-        recon_weight = 10.000
+        recon_weight = 5.000
         vt_weight = 1.000
         kl_weight = 0.001
     class runner( LeggedRobotCfgPPO.runner ):
