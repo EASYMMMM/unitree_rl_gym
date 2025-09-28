@@ -123,11 +123,12 @@ class PPO_CVAE:
             next_obs_b, vt_tgt_b) in generator:
 
             # ========= (A) Update PPO  =========
-            vt, z, _, _ = ac.encoder(obs_b)    # 建图，但随即对 PPO 阶段阻断
+            vt, z, mu_z, logstd_z = ac.encoder(obs_b)    # 建图，但随即对 PPO 阶段阻断
             vt = vt.detach()
             z  = z.detach()
+            mu_z = mu_z.detach()
 
-            mu = ac.policy_cvae(obs_b, vt, z) # 只对 policy head 建图
+            mu = ac.policy_cvae(obs_b, vt, mu_z) # 只对 policy head 建图
             std = std_param.expand_as(mu)
             std = std.clamp_min(1e-3)
             dist = torch.distributions.Normal(mu, std)
@@ -182,7 +183,7 @@ class PPO_CVAE:
             has_vt    = vt_tgt_b is not None
 
             if has_recon or has_vt:
-                vt2, z2, mu_z, logstd_z = ac.encoder(obs_b)  # 新的图B
+                vt2, z2, mu_z2, logstd_z2 = ac.encoder(obs_b)  # 新的图B
                 losses = []
                 obs_recon_loss = None
                 vt_recon_loss = None
@@ -198,7 +199,7 @@ class PPO_CVAE:
                     vt_recon_loss = vt_loss.item()
 
                 # KL 始终可算（若你想只在 has_recon 时算，也可加条件）
-                kl = 0.5 * torch.sum(torch.exp(2.0 * logstd_z) + mu_z.pow(2) - 1.0 - 2.0 * logstd_z, dim=-1).mean()
+                kl = 0.5 * torch.sum(torch.exp(2.0 * logstd_z2) + mu_z2.pow(2) - 1.0 - 2.0 * logstd_z2, dim=-1).mean()
                 cvae_kl_loss = kl.item()
                 losses.append(self.kl_weight * kl)
 

@@ -114,7 +114,7 @@ class ActorCriticCVAE(ActorCritic):
         self.policy_cvae = PolicyHead(num_actor_obs, vt_dim, z_dim, num_actions, actor_hidden_dims, activation)
 
         print('Encoder MLP:', {self.encoder})
-        print('Dncoder MLP:', {self.decoder})
+        print('Decoder MLP:', {self.decoder})
         print('PolicyHead MLP:', {self.policy_cvae})
 
         # 标记父类的 actor 不再使用（避免混淆）
