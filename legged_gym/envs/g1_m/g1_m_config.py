@@ -43,13 +43,13 @@ class G1_mRoughCfg( LeggedRobotCfg ):
                      'knee': 150,
                      'ankle': 40,
                      }  # [N*m/rad]
-        damping = {  'hip_yaw': 2, # 2,
-                     'hip_roll': 2, # 2,
-                     'hip_pitch': 2, # 2,
+        damping = {  'hip_yaw': 2, 
+                     'hip_roll': 2, 
+                     'hip_pitch': 2,  
                      'knee': 4,
                      'ankle': 2,
                      }  # [N*m/rad]
-        action_scale = 0.15
+        action_scale = 0.15 # 0.25
         decimation = 4
     class asset( LeggedRobotCfg.asset ):
         file = '{LEGGED_GYM_ROOT_DIR}/resources/robots/g1_description/g1_12dof.urdf'
