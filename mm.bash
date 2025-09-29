@@ -19,7 +19,7 @@ python legged_gym/scripts/play.py --task=h1_m
 # basic g1 training
 python legged_gym/scripts/train.py --task=g1 --headless --num_envs=4096 --max_iterations=2000  --sim_device=cuda:1 --rl_device=cuda:1
 # check
-python legged_gym/scripts/play.py --task=g1
+python legged_gym/scripts/play.py --task=g1 --num_envs=24
 
 # g1_m training
 python legged_gym/scripts/train.py --task=g1_m  --num_envs=4096 --max_iterations=10000 --headless --sim_device=cuda:2 --rl_device=cuda:2 --run_name=CVAE_vt
