@@ -27,7 +27,7 @@ python legged_gym/scripts/train.py --task=g1_m  --num_envs=4096 --max_iterations
 python legged_gym/scripts/train.py --task=g1_m  --num_envs=4096 --max_iterations=2000 --headless --sim_device=cuda:3 --rl_device=cuda:3 --run_name=CVAE
 
 # g1_m check
-python legged_gym/scripts/play.py --task=g1_m --num_envs=24
+python legged_gym/scripts/legged_gym_play.py --task=g1_m --num_envs=24 --record_video
 
 Total number of episodes: 24
 legged_gym/scripts/legged_gym_play.py:149: DeprecationWarning: Starting with ImageIO v3 the behavior of this function will switch to that of iio.v3.imread. To keep the current behavior (and make this warning disappear) use `import imageio.v2 as imageio` or call `imageio.v2.imread` directly.
