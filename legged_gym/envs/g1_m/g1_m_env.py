@@ -11,6 +11,8 @@ class G1_mRobot(LeggedRobot):
         self.priv_obs_stack_n = self.cfg.env.priv_obs_stack_n
         self._obs_stack_buf = None
         self._priv_stack_buf = None
+        if self.headless == False:
+            self._init_camera()
 
     def _get_noise_scale_vec(self, cfg):
         noise_vec = torch.zeros_like(self.obs_buf[0])
@@ -45,6 +47,37 @@ class G1_mRobot(LeggedRobot):
         self.feet_pos = self.feet_state[:, :, :3]
         self.feet_vel = self.feet_state[:, :, 7:10]
     
+    def _init_camera(self):
+        self.gym.refresh_actor_root_state_tensor(self.sim)
+        self._cam_prev_char_pos = self.root_states[0, 0:3].cpu().numpy()
+        
+        cam_pos = gymapi.Vec3(self._cam_prev_char_pos[0], 
+                              self._cam_prev_char_pos[1] - 3.0, 
+                              1.0)
+        cam_target = gymapi.Vec3(self._cam_prev_char_pos[0],
+                                 self._cam_prev_char_pos[1],
+                                 1.0)
+        if self.headless == False:
+            self.gym.viewer_camera_look_at(self.viewer, None, cam_pos, cam_target)
+        return
+    
+    def set_follow_camera(self):
+        self.gym.refresh_actor_root_state_tensor(self.sim)
+        char_root_pos = self.root_states[0, 0:3].cpu().numpy()
+        
+        cam_trans = self.gym.get_viewer_camera_transform(self.viewer, None)
+        cam_pos = np.array([cam_trans.p.x, cam_trans.p.y, cam_trans.p.z])
+        cam_delta = cam_pos - self._cam_prev_char_pos
+
+        new_cam_target = gymapi.Vec3(char_root_pos[0], char_root_pos[1], 1.0)
+        new_cam_pos = gymapi.Vec3(char_root_pos[0] + cam_delta[0], 
+                                  char_root_pos[1] + cam_delta[1], 
+                                  cam_pos[2])
+
+        self.gym.viewer_camera_look_at(self.viewer, None, new_cam_pos, new_cam_target)
+
+        self._cam_prev_char_pos[:] = char_root_pos
+
     def _post_physics_step_callback(self):
         self.update_feet_state()
         period = 0.8
