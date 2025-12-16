@@ -7,7 +7,6 @@ from torch.distributions import Normal
 from rsl_rl.modules.actor_critic import ActorCritic, get_activation
 
 
-
 def mlp(sizes, activation="elu", out_act=None):
     layers = []
     for i in range(len(sizes) - 1):
@@ -62,6 +61,19 @@ class PolicyHead(nn.Module):
         return self.mu(x)
 
 
+# [NEW] Q-Network for Stage 2 (Offline RL)
+# 这是一个独立的 Q 函数网络：Q(s, a) -> value
+class QNetwork(nn.Module):
+    def __init__(self, obs_dim, act_dim, hidden_dims=(256, 256, 256), activation="elu"):
+        super().__init__()
+        # 输入拼接: [obs, action]
+        self.q = mlp((obs_dim + act_dim,) + tuple(hidden_dims) + (1,), activation)
+
+    def forward(self, obs, actions):
+        x = torch.cat([obs, actions], dim=-1)
+        return self.q(x)
+
+
 # ----------------- CVAE-ActorCritic -----------------
 class ActorCriticCVAE(ActorCritic):
     """
@@ -113,14 +125,21 @@ class ActorCriticCVAE(ActorCritic):
         self.decoder = Decoder(vt_dim, z_dim, num_recon_observations, decoder_hidden_dims, activation)  # 先挂上，下一步接损失
         self.policy_cvae = PolicyHead(num_actor_obs, vt_dim, z_dim, num_actions, actor_hidden_dims, activation)
 
+        # [NEW] 添加 Q-Critic 模块 (用于 Stage 2 离线 RL)
+        # 关键修改：离线 Q 网络必须使用 Actor 观测 (num_actor_obs)，不能用特权观测 (num_critic_obs)
+        # 因为在 CVAE 推演未来时，我们无法生成特权观测。
+        self.q_critic = QNetwork(num_actor_obs, num_actions, critic_hidden_dims, activation)
+
         print('Encoder MLP:', {self.encoder})
         print('Decoder MLP:', {self.decoder})
         print('PolicyHead MLP:', {self.policy_cvae})
+        print('Q-Critic MLP:', {self.q_critic})
 
         # 标记父类的 actor 不再使用（避免混淆）
         self.actor = None
 
         # 轻微正交初始化（与 rsl_rl 风格一致）
+        # 这会自动初始化包括 q_critic 在内的所有子模块
         self.apply(self._init_weights_orthogonal)
 
     @staticmethod

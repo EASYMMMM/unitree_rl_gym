@@ -241,7 +241,12 @@ class OnPolicyRunner_WB(OnPolicyRunner):
     # 兼容原版AC和CVAE算法的加载
     def load(self, path):
         checkpoint = torch.load(path, map_location=self.device)
-        self.alg.actor_critic.load_state_dict(checkpoint['model_state_dict'])
+        
+        # [Fix] 添加 strict=False
+        # 这样即使 checkpoint 里缺少 q_critic 的权重（或者多了其他权重），也不会报错。
+        # 对于 play.py，q_critic 会保持随机初始化，但这不影响数据采集，因为我们只用 Actor。
+        self.alg.actor_critic.load_state_dict(checkpoint['model_state_dict'], strict=False)
+        
         # 原版PPO有optimizer，CVAE有optim_rl/optim_cvae
         if hasattr(self.alg, 'optimizer') and 'optimizer_state_dict' in checkpoint:
             self.alg.optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
@@ -250,6 +255,11 @@ class OnPolicyRunner_WB(OnPolicyRunner):
                 self.alg.optim_rl.load_state_dict(checkpoint['optim_rl_state_dict'])
             if hasattr(self.alg, 'optim_cvae') and 'optim_cvae_state_dict' in checkpoint:
                 self.alg.optim_cvae.load_state_dict(checkpoint['optim_cvae_state_dict'])
+        
         if 'iter' in checkpoint:
             self.current_learning_iteration = checkpoint['iter']
+        
+        # 如果是部分加载（比如 strict=False），这里打印个提示会更好，不过不是必须的
+        print(f"Loaded model from {path} (strict=False)")
+        
         return checkpoint.get('infos', None)

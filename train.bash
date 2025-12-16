@@ -29,3 +29,7 @@ python legged_gym/scripts/train.py --task=g1_m  --num_envs=4096 --max_iterations
 # g1_m check
 python legged_gym/scripts/legged_gym_play.py --task=g1_m --num_envs=24 --record_video
 
+# Collect Real World Data
+python legged_gym/scripts/legged_gym_play.py --task=g1_m --num_envs=50 --collect_data  --collect_max_steps 20000 --headless
+# Continual Learning Stage1
+python legged_gym/scripts/train_offline_stage1.py --task=g1_m --resume --checkpoint=-1  --load_run=Sep29_14-53-15_CVAE_vt --headless

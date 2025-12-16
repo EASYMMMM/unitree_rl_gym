@@ -23,6 +23,7 @@ class G1_mRoughCfg( LeggedRobotCfg ):
     class env(LeggedRobotCfg.env):
         obs_stack_n = 6
         priv_obs_stack_n = 1
+        num_single_frame_observations = 45
         num_observations = obs_stack_n*45 + 2 
         num_privileged_obs = priv_obs_stack_n*50
         num_recon_observations = 30
@@ -52,7 +53,8 @@ class G1_mRoughCfg( LeggedRobotCfg ):
         action_scale = 0.15 # 0.25
         decimation = 4
     class asset( LeggedRobotCfg.asset ):
-        file = '{LEGGED_GYM_ROOT_DIR}/resources/robots/g1_description/g1_12dof.urdf'
+        file = '{LEGGED_GYM_ROOT_DIR}/resources/robots/g1_description/g1_12dof_perturbed.urdf'
+        # file = '{LEGGED_GYM_ROOT_DIR}/resources/robots/g1_description/g1_12dof.urdf'
         name = "g1"
         foot_name = "ankle_roll"
         penalize_contacts_on = ["hip", "knee"]
