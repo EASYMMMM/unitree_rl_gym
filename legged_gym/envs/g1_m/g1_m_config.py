@@ -87,11 +87,13 @@ class G1_mRoughCfgPPO( LeggedRobotCfgPPO ):
     class policy:
         num_recon_observations = G1_mRoughCfg.env.num_recon_observations
         init_noise_std = 0.8
+        # num_single_obs = None
         num_single_obs = 45
         actor_hidden_dims = [1024, 512]
         critic_hidden_dims = [1024, 512]
         activation = 'elu'
         # CVAE
+        z_dim = 16
         encoder_hidden_dims = [1024, 512]
         decoder_hidden_dims = [512, 1024]
         rnn_type = 'lstm'

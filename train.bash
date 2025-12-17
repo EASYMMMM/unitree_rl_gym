@@ -28,7 +28,7 @@ python legged_gym/scripts/train.py --task=g1_m  --num_envs=4096 --max_iterations
 python legged_gym/scripts/train.py --task=g1_m  --num_envs=4096 --max_iterations=2000 --headless --sim_device=cuda:3 --rl_device=cuda:3 --run_name=CVAE
 python legged_gym/scripts/train.py --task=g1_m  --num_envs=4096 --max_iterations=2000 --headless  --run_name=CVAE
 # g1_m check
-python legged_gym/scripts/legged_gym_play.py --task=g1_m --num_envs=24 --record_video
+python legged_gym/scripts/legged_gym_play.py --task=g1_m --num_envs=12  --load_run=Sep28_20-18-25_CVAE_vt --record_video
 
 # Collect Real World Data
 python legged_gym/scripts/legged_gym_play.py --task=g1_m --num_envs=50 --collect_data  --collect_max_steps 20000 --headless

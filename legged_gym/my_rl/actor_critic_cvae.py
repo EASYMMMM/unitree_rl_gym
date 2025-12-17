@@ -60,6 +60,7 @@ class PolicyHead(nn.Module):
         # [NEW] 如果传入的 obs 维度大于预期（全量历史），则在此处裁剪
         # 预期维度为 num_single_obs + 2 (相位)
         obs_in = obs
+        # z = z*0.5
         if self.num_single_obs is not None:
              expected_dim = self.num_single_obs + 2
              if obs.shape[-1] > expected_dim:
@@ -68,7 +69,6 @@ class PolicyHead(nn.Module):
 
         x = torch.cat([obs_in, vt, z], dim=-1)
         return self.mu(x)
-
 
 
 # 这是一个独立的 Q 函数网络：Q(s, a) -> value 
@@ -160,8 +160,9 @@ class ActorCriticCVAE(ActorCritic):
         print(f'PolicyHead MLP (Input={self.policy_input_dim}):', {self.policy_cvae})
         print('Q-Critic MLP:', {self.q_critic})
 
-        # 标记父类的 actor 不再使用（避免混淆）
-        self.actor = None
+        # 移除手动设置 self.actor = None，避免 JIT 混淆
+        # self.actor 将保留为父类创建的默认 nn.Sequential (未使用)
+        # 这不会影响 policy_cvae 的逻辑
 
         # 轻微正交初始化（与 rsl_rl 风格一致）
         # 这会自动初始化包括 q_critic 在内的所有子模块
@@ -238,19 +239,8 @@ class ActorCriticCVAE(ActorCritic):
     def entropy(self):
         return self._entropy
 
-    # --------- 等效的actor，用于兼容play.py等需要.actor的场景 ---------
-    @property
-    def actor(self):
-        class _Actor(nn.Module):
-            def __init__(self, parent_ref):
-                super().__init__()
-                self.parent = parent_ref
-            def forward(self, obs):
-                # 必须复用父类的逻辑以包含切片操作
-                mu, std, _, _, _, _ = self.parent._actor_forward(obs)
-                return mu, std
-        # 返回一个包装类，行为与原actor一致
-        return _Actor(self)
+    # 移除 property actor(self)，因为这会混淆 JIT 且并未使用。
+    # 外部调用应使用 act_inference 或 policy_cvae。
 
     def evaluate(self, critic_observations, masks=None, hidden_states=None):
         """
