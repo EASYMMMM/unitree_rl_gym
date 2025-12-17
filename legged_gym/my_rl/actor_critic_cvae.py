@@ -1,4 +1,3 @@
-# rsl_rl/modules/actor_critic_cvae.py
 import math
 import torch
 import torch.nn as nn
@@ -31,9 +30,9 @@ class Encoder(nn.Module):
 
     def forward(self, obs):
         h = self.backbone(obs)
-        vt = self.fc_vt(h)                                  # [B, vt_dim]
-        mu_z = self.fc_mu(h)                                # [B, z_dim]
-        logstd_z = self.fc_logstd(h).clamp(-6.0, 2.0)       # 数值稳定
+        vt = self.fc_vt(h)                                          # [B, vt_dim]
+        mu_z = self.fc_mu(h)                                        # [B, z_dim]
+        logstd_z = self.fc_logstd(h).clamp(-6.0, 2.0)               # 数值稳定
         std_z = torch.exp(logstd_z)
         # reparameterize
         z = mu_z + std_z * torch.randn_like(std_z)
@@ -52,17 +51,28 @@ class Decoder(nn.Module):
 
 class PolicyHead(nn.Module):
     """ π(a_t | o_t, v_hat_t, z_t) → μ """
-    def __init__(self, obs_dim, vt_dim, z_dim, act_dim, hidden=(256, 256), activation="elu"):
+    def __init__(self, obs_dim, vt_dim, z_dim, act_dim, hidden=(256, 256), activation="elu", num_single_obs=None):
         super().__init__()
         self.mu = mlp((obs_dim + vt_dim + z_dim,) + tuple(hidden) + (act_dim,), activation)
+        self.num_single_obs = num_single_obs
 
     def forward(self, obs, vt, z):
-        x = torch.cat([obs, vt, z], dim=-1)
+        # [NEW] 如果传入的 obs 维度大于预期（全量历史），则在此处裁剪
+        # 预期维度为 num_single_obs + 2 (相位)
+        obs_in = obs
+        if self.num_single_obs is not None:
+             expected_dim = self.num_single_obs + 2
+             if obs.shape[-1] > expected_dim:
+                 # 取前 num_single_obs 维 (单帧) + 后 2 维 (相位)
+                 obs_in = torch.cat([obs[:, :self.num_single_obs], obs[:, -2:]], dim=-1)
+
+        x = torch.cat([obs_in, vt, z], dim=-1)
         return self.mu(x)
 
 
-# [NEW] Q-Network for Stage 2 (Offline RL)
-# 这是一个独立的 Q 函数网络：Q(s, a) -> value
+
+# 这是一个独立的 Q 函数网络：Q(s, a) -> value 
+# 用于Uni-O4
 class QNetwork(nn.Module):
     def __init__(self, obs_dim, act_dim, hidden_dims=(256, 256, 256), activation="elu"):
         super().__init__()
@@ -90,6 +100,8 @@ class ActorCriticCVAE(ActorCritic):
                  num_actor_obs: int,
                  num_critic_obs: int,
                  num_actions: int,
+                 # [NEW] 新增参数：单帧观测维度 (不含相位)
+                 num_single_obs: int = None,
                  # 下面是 CVAE 的新增超参
                  vt_dim: int = 3,
                  z_dim: int = 16,
@@ -118,12 +130,25 @@ class ActorCriticCVAE(ActorCritic):
         self.z_dim = z_dim
         self.activation = activation
 
+        # [NEW] 确定 PolicyHead 的输入维度
+        # 如果传入了 num_single_obs，则策略输入 = 单帧 + 2(相位)
+        if num_single_obs is not None:
+            self.num_single_obs = num_single_obs
+            self.policy_input_dim = num_single_obs + 2
+        else:
+            # 兼容旧逻辑：如果不传，默认使用全量观测
+            self.num_single_obs = None
+            self.policy_input_dim = num_actor_obs
+
         self.log_std = nn.Parameter(torch.full((num_actions,), math.log(init_noise_std)))
 
         # CVAE-Actor 组件
+        # Encoder 仍然接收 num_actor_obs (全量历史)
         self.encoder = Encoder(num_actor_obs, vt_dim, z_dim, encoder_hidden_dims, activation)
         self.decoder = Decoder(vt_dim, z_dim, num_recon_observations, decoder_hidden_dims, activation)  # 先挂上，下一步接损失
-        self.policy_cvae = PolicyHead(num_actor_obs, vt_dim, z_dim, num_actions, actor_hidden_dims, activation)
+        
+        # [MODIFIED] PolicyHead 使用 policy_input_dim, 并传入 num_single_obs 以便内部裁剪
+        self.policy_cvae = PolicyHead(self.policy_input_dim, vt_dim, z_dim, num_actions, actor_hidden_dims, activation, num_single_obs=self.num_single_obs)
 
         # [NEW] 添加 Q-Critic 模块 (用于 Stage 2 离线 RL)
         # 关键修改：离线 Q 网络必须使用 Actor 观测 (num_actor_obs)，不能用特权观测 (num_critic_obs)
@@ -132,7 +157,7 @@ class ActorCriticCVAE(ActorCritic):
 
         print('Encoder MLP:', {self.encoder})
         print('Decoder MLP:', {self.decoder})
-        print('PolicyHead MLP:', {self.policy_cvae})
+        print(f'PolicyHead MLP (Input={self.policy_input_dim}):', {self.policy_cvae})
         print('Q-Critic MLP:', {self.q_critic})
 
         # 标记父类的 actor 不再使用（避免混淆）
@@ -158,6 +183,8 @@ class ActorCriticCVAE(ActorCritic):
           vt, z, mu_z, logstd_z: 便于后续扩展（当前 PPO 未用）
         """
         vt, z, mu_z, logstd_z = self.encoder(observations)
+        
+        # [MODIFIED] 直接传入 observations，由 PolicyHead 内部检测并裁剪
         mu = self.policy_cvae(observations, vt, mu_z)  # 动作均值
         std = self.std.expand_as(mu)                # 父类已注册为可学习噪声 std（形状 [act_dim]）
         return mu, std, vt, z, mu_z, logstd_z
@@ -215,18 +242,15 @@ class ActorCriticCVAE(ActorCritic):
     @property
     def actor(self):
         class _Actor(nn.Module):
-            def __init__(self, encoder, policy_cvae, std):
+            def __init__(self, parent_ref):
                 super().__init__()
-                self.encoder = encoder
-                self.policy_cvae = policy_cvae
-                self.std = std
+                self.parent = parent_ref
             def forward(self, obs):
-                vt, z, mu_z, logstd_z = self.encoder(obs)
-                mu = self.policy_cvae(obs, vt, mu_z)
-                std = self.std.expand_as(mu)
+                # 必须复用父类的逻辑以包含切片操作
+                mu, std, _, _, _, _ = self.parent._actor_forward(obs)
                 return mu, std
         # 返回一个包装类，行为与原actor一致
-        return _Actor(self.encoder, self.policy_cvae, self.std)
+        return _Actor(self)
 
     def evaluate(self, critic_observations, masks=None, hidden_states=None):
         """

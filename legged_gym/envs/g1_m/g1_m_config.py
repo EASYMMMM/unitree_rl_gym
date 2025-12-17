@@ -23,7 +23,7 @@ class G1_mRoughCfg( LeggedRobotCfg ):
     class env(LeggedRobotCfg.env):
         obs_stack_n = 6
         priv_obs_stack_n = 1
-        num_single_frame_observations = 45
+        num_single_obs = 45
         num_observations = obs_stack_n*45 + 2 
         num_privileged_obs = priv_obs_stack_n*50
         num_recon_observations = 30
@@ -87,6 +87,7 @@ class G1_mRoughCfgPPO( LeggedRobotCfgPPO ):
     class policy:
         num_recon_observations = G1_mRoughCfg.env.num_recon_observations
         init_noise_std = 0.8
+        num_single_obs = 45
         actor_hidden_dims = [1024, 512]
         critic_hidden_dims = [1024, 512]
         activation = 'elu'
