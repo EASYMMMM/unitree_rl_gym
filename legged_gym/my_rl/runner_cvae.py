@@ -43,6 +43,22 @@ class OnPolicyRunner_WB(OnPolicyRunner):
         else:
             num_critic_obs = self.env.num_obs
 
+        # ---------------------------------------------------------
+        # [NEW] Config Logic for DPCVAE
+        # 根据 cvae_type 自动调整算法参数
+        # ---------------------------------------------------------
+        cvae_type = self.cfg.get("cvae_type", "cvae") # 默认为 cvae
+        if cvae_type == "dpcvae":
+            print(f"[Runner] Detected cvae_type='dpcvae'. Enabling Geometry Loss.")
+            # 如果算法配置里没有指定 geometry_weight，或者为0，则给一个默认值 1.0
+            if self.alg_cfg.get("geometry_weight", 0.0) <= 1e-6:
+                self.alg_cfg["geometry_weight"] = 1.0
+                print(f"[Runner] Set algorithm.geometry_weight = 1.0")
+        else:
+            # 如果是普通 cvae，确保 geometry_weight 为 0
+            self.alg_cfg["geometry_weight"] = 0.0
+            print(f"[Runner] Detected cvae_type='{cvae_type}'. Disabled Geometry Loss.")
+
         # 通过 eval() 创建策略与算法；确保上面 import 了 ActorCriticCVAE / PPO_CVAE
         actor_critic_class = eval(self.cfg["policy_class_name"]) # ActorCritic / ActorCriticCVAE
         actor_critic: ActorCritic = actor_critic_class(
@@ -53,6 +69,7 @@ class OnPolicyRunner_WB(OnPolicyRunner):
         ).to(self.device)
 
         alg_class = eval(self.cfg["algorithm_class_name"]) # PPO / PPO_CVAE
+        # 注意：这里传入修改后的 self.alg_cfg
         self.alg = alg_class(actor_critic, device=self.device, **self.alg_cfg)
 
         self.num_steps_per_env = self.cfg["num_steps_per_env"]
@@ -115,7 +132,7 @@ class OnPolicyRunner_WB(OnPolicyRunner):
             flush_secs=10,
         )
 
-    # -------- 覆盖 learn：与原版一致，只在 rollout 阶段多传 next_obs / vt_target --------
+    # -------- 覆盖 learn：与原版一致，只在 rollout 阶段多传 next_obs / vt_target / dynamic_params --------
     def learn(self, num_learning_iterations, init_at_random_ep_len=False):
         self._ensure_wandb_writer()
 
@@ -148,28 +165,40 @@ class OnPolicyRunner_WB(OnPolicyRunner):
                     actions = self.alg.act(obs, critic_obs)
                     obs_next, privileged_obs_next, rewards, dones, infos = self.env.step(actions)
                     critic_obs_next = privileged_obs_next if privileged_obs_next is not None else obs_next
-                    # TODO: vt or vt+1
-                    # vt_target = privileged_obs_next[..., 0:3]  # vt+1
-                    vt_target = critic_obs[..., 0:3]     # vt
+                    
+                    # CVAE targets
+                    vt_target = critic_obs[..., 0:3]     # vt (使用当前的 critic_obs 作为 vt 的 target，即 v_t)
+                    
+                    # [NEW] Dynamics Params (epsilon)
+                    # Env 中将 key 命名为了 'dynamic_params'
+                    # 注意：如果环境不支持 dynamic_params，get 会返回 None
+                    dynamic_params = infos.get('dynamic_params', None)
+
+                    # [DEBUG] 在第一步检查数据流
+                    if it == self.current_learning_iteration and i == 0:
+                        cvae_type = self.cfg.get("cvae_type", "cvae")
+                        if cvae_type == 'dpcvae':
+                            if dynamic_params is None:
+                                print(f"\n[Runner CRITICAL WARNING] DPCVAE is enabled but 'dynamic_params' is None in infos!")
+                                print(f"Available keys in infos: {list(infos.keys())}")
+                                print(f"Please check 'g1_m_env.py' -> 'compute_observations' -> 'self.extras'")
+                            else:
+                                print(f"\n[Runner INFO] Successfully captured dynamic_params. Shape: {dynamic_params.shape}")
+
                     # 传入 PPO / PPO_CVAE：把 next_obs 与 vt_target 一并记录
                     obs_next_d = obs_next.to(self.device)
                     critic_obs_next_d = critic_obs_next.to(self.device)
-                    try:
-                        # PPO_CVAE  
-                        self.alg.process_env_step(
-                            rewards.to(self.device),
-                            dones.to(self.device),
-                            infos,
-                            next_obs=infos['obs_next_d'],
-                            vt_target=(vt_target.to(self.device) if vt_target is not None else None),
-                        )
-                    except KeyError:
-                        # PPO
-                        self.alg.process_env_step(
-                            rewards.to(self.device),
-                            dones.to(self.device),
-                            infos,
-                        )
+                    
+                    # [MODIFIED] 移除 try-except，直接调用。如果有错误，直接抛出，不要掩盖。
+                    # 之前 dynamic_params 丢失很可能是因为这里报错后走了 fallback 逻辑。
+                    self.alg.process_env_step(
+                        rewards.to(self.device),
+                        dones.to(self.device),
+                        infos,
+                        next_obs=infos.get('obs_next_d', None),
+                        vt_target=(vt_target.to(self.device) if vt_target is not None else None),
+                        dynamic_params=dynamic_params  # [NEW] Pass epsilon to algorithm
+                    )
                    
                     obs, critic_obs = obs_next_d, critic_obs_next_d
 
@@ -204,8 +233,11 @@ class OnPolicyRunner_WB(OnPolicyRunner):
                 cvae_loss = getattr(self.alg, "last_cvae_loss", None)
                 vt_recon_loss = getattr(self.alg, "last_vt_recon_loss", None)
                 obs_recon_loss = getattr(self.alg, "last_obs_recon_loss", None)
-                cvae_kl_loss = getattr(self.alg, "last_kl_loss", None)
-                cvae_z_smooth_loss = getattr(self.alg, "last_z_smooth_loss", None)
+                cvae_kl_loss = getattr(self.alg, "last_cvae_kl_loss", None)
+                
+                # [NEW] Log geometry loss
+                geometry_loss = getattr(self.alg, "last_geometry_loss", None)
+
                 if cvae_loss is not None:
                     self.writer.add_scalar('Loss/cvae_loss', cvae_loss, it)
                 if vt_recon_loss is not None:
@@ -214,8 +246,9 @@ class OnPolicyRunner_WB(OnPolicyRunner):
                     self.writer.add_scalar('Loss/obs_recon_loss', obs_recon_loss, it)
                 if cvae_kl_loss is not None:
                     self.writer.add_scalar('Loss/cvae_kl_loss', cvae_kl_loss, it)
-                if cvae_z_smooth_loss is not None:
-                    self.writer.add_scalar('Loss/cvae_z_smooth_loss', cvae_z_smooth_loss, it)
+                if geometry_loss is not None:
+                    self.writer.add_scalar('Loss/geometry_loss', geometry_loss, it)
+                    
                 self.log(locals())
             if it % self.save_interval == 0:
                 self.save(os.path.join(self.log_dir, f'model_{it}.pt'))

@@ -40,31 +40,77 @@ class Encoder(nn.Module):
 
 
 class Decoder(nn.Module):
-    """ p(o_{t+1} | z_t, v_hat_t) —— 先占位，下一步接重构损失 """
-    def __init__(self, vt_dim, z_dim, obs_dim, hidden=(256, 256), activation="elu"):
+    """ 
+    p(o_{t+1} | Condition, z_t) 
+    - CVAE: Condition = vt
+    - DPCVAE: Condition = Single Frame Obs (subset of full obs)
+    """
+    def __init__(self, 
+                 z_dim, 
+                 out_dim, 
+                 hidden=(256, 256), 
+                 activation="elu", 
+                 cvae_type='cvae',
+                 vt_dim=None,           # for cvae
+                 obs_dim=None,          # for dpcvae
+                 num_decoder_obs=None   # for dpcvae cropping
+                 ):
         super().__init__()
-        self.net = mlp((vt_dim + z_dim,) + tuple(hidden) + (obs_dim,), activation)
+        self.cvae_type = cvae_type
+        self.num_decoder_obs = num_decoder_obs
+        
+        # Determine Input Dimension
+        if cvae_type == 'cvae':
+            if vt_dim is None:
+                raise ValueError("cvae_type='cvae' requires vt_dim")
+            input_dim = vt_dim + z_dim
+            
+        elif cvae_type == 'dpcvae':
+            if obs_dim is None:
+                raise ValueError("cvae_type='dpcvae' requires obs_dim")
+            # 如果指定了 num_decoder_obs，则输入维度为 num_decoder_obs + 2 (相位)
+            if num_decoder_obs is not None:
+                cond_dim = num_decoder_obs + 2 
+            else:  # 否则使用全量观测维度
+                cond_dim = obs_dim
+            input_dim = cond_dim + z_dim      
+        else:
+            raise ValueError(f"Unknown cvae_type: {cvae_type}")
 
-    def forward(self, vt, z):
-        return self.net(torch.cat([vt, z], dim=-1))
+        self.net = mlp((input_dim,) + tuple(hidden) + (out_dim,), activation)
+
+    def forward(self, x, z):
+        # x is the condition (vt or obs) 
+        condition = x
+        
+        # [CVAE] x is vt, use directly
+        if self.cvae_type == 'dpcvae':
+            # [DPCVAE] x is observations, apply cropping if needed
+            if self.num_decoder_obs is not None:
+                 expected_dim = self.num_decoder_obs + 2 # 假设 +2 是 sin/cos phase
+                 if x.shape[-1] > expected_dim:
+                     # 取前 num_decoder_obs 维 (单帧) + 后 2 维 (相位)
+                     condition = torch.cat([x[:, :self.num_decoder_obs], x[:, -2:]], dim=-1)
+        
+        return self.net(torch.cat([condition, z], dim=-1))
 
 
 class PolicyHead(nn.Module):
     """ π(a_t | o_t, v_hat_t, z_t) → μ """
-    def __init__(self, obs_dim, vt_dim, z_dim, act_dim, hidden=(256, 256), activation="elu", num_single_obs=None):
+    def __init__(self, obs_dim, vt_dim, z_dim, act_dim, hidden=(256, 256), activation="elu", num_policy_head_obs=None):
         super().__init__()
         self.mu = mlp((obs_dim + vt_dim + z_dim,) + tuple(hidden) + (act_dim,), activation)
-        self.num_single_obs = num_single_obs
+        self.num_policy_head_obs = num_policy_head_obs
 
     def forward(self, obs, vt, z):
         # [NEW] 如果传入的 obs 维度大于预期（全量历史），则在此处裁剪
-        # 预期维度为 num_single_obs + 2 (相位)
+        # 预期维度为 num_policy_head_obs + 2 (相位)
         obs_in = obs
-        if self.num_single_obs is not None:
-             expected_dim = self.num_single_obs + 2
+        if self.num_policy_head_obs is not None:
+             expected_dim = self.num_policy_head_obs + 2
              if obs.shape[-1] > expected_dim:
-                 # 取前 num_single_obs 维 (单帧) + 后 2 维 (相位)
-                 obs_in = torch.cat([obs[:, :self.num_single_obs], obs[:, -2:]], dim=-1)
+                 # 取前 num_policy_head_obs 维 (单帧) + 后 2 维 (相位)
+                 obs_in = torch.cat([obs[:, :self.num_policy_head_obs], obs[:, -2:]], dim=-1)
 
         x = torch.cat([obs_in, vt, z], dim=-1)
         return self.mu(x)
@@ -96,11 +142,13 @@ class ActorCriticCVAE(ActorCritic):
     is_recurrent = False
 
     def __init__(self,
-                 num_actor_obs: int,
+                 num_obs: int,
                  num_critic_obs: int,
                  num_actions: int,
-                 # [NEW] 新增参数：单帧观测维度 (不含相位)
-                 num_single_obs: int = None,
+                 # [NEW] 新增参数：Actor观测维度 (不含相位)
+                 num_policy_head_obs: int = None,
+                 # [NEW] 新增参数：Decoder观测维度 (不含相位)
+                 num_decoder_obs: int = None,
                  # 下面是 CVAE 的新增超参
                  vt_dim: int = 3,
                  z_dim: int = 16,
@@ -112,9 +160,10 @@ class ActorCriticCVAE(ActorCritic):
                  activation: str = "elu",
                  init_noise_std: float = 1.0,
                  num_recon_observations = 29,
+                 cvae_type: str = 'cvae',
                  **kwargs):
         # 先用父类构造（含 critic、可学习的 self.std 参数等）
-        super().__init__(num_actor_obs=num_actor_obs,
+        super().__init__(num_actor_obs=num_obs,
                          num_critic_obs=num_critic_obs,
                          num_actions=num_actions,
                          actor_hidden_dims=actor_hidden_dims,  # 父类会建一个 actor，但我们不用它
@@ -123,36 +172,49 @@ class ActorCriticCVAE(ActorCritic):
                          init_noise_std=init_noise_std)
 
         # 保存形状/超参
-        self.obs_dim = num_actor_obs
+        self.obs_dim = num_obs
         self.act_dim = num_actions
         self.vt_dim = vt_dim
         self.z_dim = z_dim
         self.activation = activation
+        self.cvae_type = cvae_type # [NEW]
 
         # [NEW] 确定 PolicyHead 的输入维度
-        # 如果传入了 num_single_obs，则策略输入 = 单帧 + 2(相位)
-        if num_single_obs is not None:
-            self.num_single_obs = num_single_obs
-            self.policy_input_dim = num_single_obs + 2
+        # 如果传入了 num_policy_head_obs，则策略输入 = 单帧 + 2(相位)
+        if num_policy_head_obs is not None:
+            self.num_policy_head_obs = num_policy_head_obs
+            self.policy_input_dim = num_policy_head_obs + 2
         else:
             # 兼容旧逻辑：如果不传，默认使用全量观测
-            self.num_single_obs = None
-            self.policy_input_dim = num_actor_obs
+            self.num_policy_head_obs = None
+            self.policy_input_dim = num_obs
 
         self.log_std = nn.Parameter(torch.full((num_actions,), math.log(init_noise_std)))
 
         # CVAE-Actor 组件
-        # Encoder 仍然接收 num_actor_obs (全量历史)
-        self.encoder = Encoder(num_actor_obs, vt_dim, z_dim, encoder_hidden_dims, activation)
-        self.decoder = Decoder(vt_dim, z_dim, num_recon_observations, decoder_hidden_dims, activation)  # 先挂上，下一步接损失
+        # Encoder 仍然接收 num_obs (全量历史)
+        self.encoder = Encoder(num_obs, vt_dim, z_dim, encoder_hidden_dims, activation)
         
-        # [MODIFIED] PolicyHead 使用 policy_input_dim, 并传入 num_single_obs 以便内部裁剪
-        self.policy_cvae = PolicyHead(self.policy_input_dim, vt_dim, z_dim, num_actions, actor_hidden_dims, activation, num_single_obs=self.num_single_obs)
+        # [MODIFIED] 初始化 Decoder
+        # 根据 cvae_type 传入不同的参数
+        self.decoder = Decoder(
+            z_dim=z_dim,
+            out_dim=num_recon_observations,
+            hidden=decoder_hidden_dims,
+            activation=activation,
+            cvae_type=cvae_type,
+            vt_dim=vt_dim,              # for cvae
+            obs_dim=num_obs,            # for dpcvae (full dim, cropped inside)
+            num_decoder_obs=num_decoder_obs # for dpcvae
+        )
+        
+        # [MODIFIED] PolicyHead 使用 policy_input_dim, 并传入 num_policy_head_obs 以便内部裁剪
+        self.policy_cvae = PolicyHead(self.policy_input_dim, vt_dim, z_dim, num_actions, actor_hidden_dims, activation, num_policy_head_obs=self.num_policy_head_obs)
 
         # [NEW] 添加 Q-Critic 模块 (用于 Stage 2 离线 RL)
-        # 关键修改：离线 Q 网络必须使用 Actor 观测 (num_actor_obs)，不能用特权观测 (num_critic_obs)
+        # 关键修改：离线 Q 网络必须使用 Actor 观测 (num_obs)，不能用特权观测 (num_critic_obs)
         # 因为在 CVAE 推演未来时，我们无法生成特权观测。
-        self.q_critic = QNetwork(num_actor_obs, num_actions, critic_hidden_dims, activation)
+        self.q_critic = QNetwork(num_obs, num_actions, critic_hidden_dims, activation)
 
         print('Encoder MLP:', {self.encoder})
         print('Decoder MLP:', {self.decoder})
@@ -264,7 +326,13 @@ class ActorCriticCVAE(ActorCritic):
 
         # 重构损失（若提供 next_observations）
         if next_observations is not None:
-            next_hat = self.decoder(vt, z)
+            if self.cvae_type == 'dpcvae':
+                # [DPCVAE] Decoder 使用 obs + z (内部裁剪)
+                next_hat = self.decoder(observations, z)
+            else:
+                # [CVAE] Decoder 使用 vt + z
+                next_hat = self.decoder(vt, z)
+            
             recon = F.mse_loss(next_hat, next_observations)
         else:
             recon = torch.tensor(0.0, device=observations.device)

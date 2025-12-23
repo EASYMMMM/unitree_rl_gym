@@ -23,7 +23,7 @@ class G1_mRoughCfg( LeggedRobotCfg ):
     class env(LeggedRobotCfg.env):
         obs_stack_n = 6
         priv_obs_stack_n = 1
-        num_single_obs = 45
+        num_policy_head_obs = 45
         num_observations = obs_stack_n*45 + 2 
         num_privileged_obs = priv_obs_stack_n*50
         num_recon_observations = 30
@@ -33,6 +33,12 @@ class G1_mRoughCfg( LeggedRobotCfg ):
         friction_range = [0.1, 1.25]
         randomize_base_mass = True
         added_mass_range = [-1., 3.]
+        
+        # [NEW] 电机参数随机化配置
+        randomize_motor_props = True
+        motor_friction_range = [0.0, 0.05]   # 电机摩擦范围
+        motor_damping_range = [0.0, 0.2]     # 电机阻尼范围
+
         push_robots = True
         push_interval_s = 5
         max_push_vel_xy = 1.5
@@ -83,12 +89,15 @@ class G1_mRoughCfg( LeggedRobotCfg ):
             feet_swing_height = -20.0
             contact = 0.18
 
+ALGO_TYPE = 'dpcvae' # cvae, dpcvae
 class G1_mRoughCfgPPO( LeggedRobotCfgPPO ):
     class policy:
+        cvae_type = ALGO_TYPE
         num_recon_observations = G1_mRoughCfg.env.num_recon_observations
         init_noise_std = 0.8
-        # num_single_obs = None
-        num_single_obs = 45
+        # num_policy_head_obs = None
+        num_policy_head_obs = 45*3
+        num_decoder_obs = 45
         actor_hidden_dims = [1024, 512]
         critic_hidden_dims = [1024, 512]
         activation = 'elu'
@@ -108,12 +117,14 @@ class G1_mRoughCfgPPO( LeggedRobotCfgPPO ):
         gamma = 0.99
         lam = 0.95
         recon_weight = 5.000
+        geometry_weight = 0.5
         vt_weight = 1.000
         kl_weight = 0.001
     class runner( LeggedRobotCfgPPO.runner ):
         save_interval = 200
         policy_class_name = "ActorCriticCVAE"
         algorithm_class_name = 'PPO_CVAE'
+        cvae_type = ALGO_TYPE # cvae, dpcvae
         num_steps_per_env = 24
         max_iterations = 1500
         run_name = ''

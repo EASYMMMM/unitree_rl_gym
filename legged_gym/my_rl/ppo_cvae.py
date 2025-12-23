@@ -27,6 +27,7 @@ class PPO_CVAE:
                  kl_weight=1e-3,
                  vt_weight=1.0,
                  z_smooth_weight=0.0,
+                 geometry_weight=0.0, # [NEW] DPCVAE Isometric Loss Weight
                  device='cpu',
                  num_recon_observations=29
                  ):
@@ -67,6 +68,10 @@ class PPO_CVAE:
         self.recon_weight = recon_weight
         self.kl_weight = kl_weight
         self.vt_weight = vt_weight
+        self.geometry_weight = geometry_weight # [NEW]
+        
+        # Debug flag
+        self._has_warned_missing_epsilon = False
 
     def init_storage(self, num_envs, num_steps, actor_obs_shape, critic_obs_shape, action_shape):
         self.storage = RolloutStorageCVAE(num_envs, num_steps,
@@ -88,18 +93,22 @@ class PPO_CVAE:
         self.transition.critic_observations = critic_obs
         return self.transition.actions
 
-    def process_env_step(self, rewards, dones, infos, next_obs=None, vt_target=None):
+    def process_env_step(self, rewards, dones, infos, next_obs=None, vt_target=None, dynamic_params=None):
         self.transition.rewards = rewards.clone()
         self.transition.dones = dones
         if 'time_outs' in infos:
             self.transition.rewards += self.gamma * torch.squeeze(
                 self.transition.values * infos['time_outs'].unsqueeze(1).to(self.device), 1)
 
-        # NEW
+        # CVAE
         if next_obs is not None:
             self.transition.next_observations = next_obs
         if vt_target is not None:
             self.transition.vt_target = vt_target
+        
+        # [NEW] DPCVAE: Store dynamics params (epsilon)
+        if dynamic_params is not None:
+            self.transition.dynamic_params = dynamic_params
 
         self.storage.add_transitions(self.transition)
         self.transition.clear()
@@ -109,14 +118,40 @@ class PPO_CVAE:
         last_values = self.actor_critic.evaluate(last_critic_obs).detach()
         self.storage.compute_returns(last_values, self.gamma, self.lam)
 
+    # [NEW] Isometric Mapping Loss
+    @staticmethod
+    def geometry_preserving_loss(mu_z, epsilon):
+        """
+        让 Latent Space (mu_z) 的几何结构 模仿 Dynamics Params Space (epsilon) 的几何结构
+        Loss = MSE( Normalize(Dist(mu_z)), Normalize(Dist(epsilon)) )
+        """
+        # 1. 计算 mu_z 的距离矩阵 (Batch, Batch)
+        # p=2 (Euclidean Distance)
+        dist_z = torch.cdist(mu_z, mu_z, p=2)
+        
+        # 2. 计算 epsilon 的距离矩阵 (Batch, Batch)
+        # epsilon 已经是归一化过的，不需要梯度
+        with torch.no_grad():
+            dist_eps = torch.cdist(epsilon, epsilon, p=2)
+            
+        # 3. 归一化两个距离矩阵，使其具有可比性
+        # 避免数值尺度影响 (例如 z 分布在 0-1，epsilon 分布在 0-1，但量级可能不同)
+        # 加 1e-6 防止除零
+        dist_z_norm = dist_z / (dist_z.mean() + 1e-6)
+        dist_eps_norm = dist_eps / (dist_eps.mean() + 1e-6)
+        
+        # 4. 结构对齐损失 (Structural Alignment)
+        loss = F.mse_loss(dist_z_norm, dist_eps_norm)
+        return loss
+
     def update(self):
         mean_value_loss, mean_surrogate_loss = 0.0, 0.0
         self.last_cvae_loss = None
         self.last_vt_recon_loss = None
         self.last_obs_recon_loss = None
         self.last_cvae_kl_loss = None
-        
-        # [REMOVED] last_z_smooth_loss because mini-batch is shuffled
+        # [MODIFIED] 如果开启了几何权重，至少初始化为 0.0，确保 Tensorboard 能记录到
+        self.last_geometry_loss = 0.0 if self.geometry_weight > 0 else None
 
         if self.actor_critic.is_recurrent:
             generator = self.storage.reccurent_mini_batch_generator(self.num_mini_batches, self.num_learning_epochs)
@@ -128,7 +163,7 @@ class PPO_CVAE:
 
         for (obs_b, critic_obs_b, actions_b, target_v_b, adv_b, ret_b,
              old_logp_b, old_mu_b, old_sigma_b, hid_b, masks_b,
-             next_obs_b, vt_tgt_b) in generator:
+             next_obs_b, vt_tgt_b, epsilon_b) in generator: # [NEW] Unpack epsilon_b
 
             # ========= (A) Update PPO  =========
             vt, z, mu_z, logstd_z = ac.encoder(obs_b)    # 建图，但随即对 PPO 阶段阻断
@@ -136,6 +171,7 @@ class PPO_CVAE:
             z  = z.detach()
             mu_z = mu_z.detach()
 
+            # [FIXED] PolicyHead 内部已处理 DPCVAE 的 obs 裁剪，所以这里直接传 obs_b 是安全的
             mu = ac.policy_cvae(obs_b, vt, mu_z)  # 只对 policy head 建图
             std = std_param.expand_as(mu)
             std = std.clamp_min(1e-3)
@@ -189,17 +225,30 @@ class PPO_CVAE:
             # ========= (B) Update CVAE =========
             has_recon = next_obs_b is not None
             has_vt    = vt_tgt_b is not None
+            
+            # [NEW] 是否计算几何损失: 需要有 epsilon 且权重 > 0
+            has_geometry = (epsilon_b is not None) and (self.geometry_weight > 0)
+            
+            # [DEBUG] 如果开启了几何损失但没有收到数据，打印警告
+            if self.geometry_weight > 0 and epsilon_b is None and not self._has_warned_missing_epsilon:
+                print(f"[PPO_CVAE Warning] geometry_weight is {self.geometry_weight} but 'epsilon_b' (dynamic params) is None!")
+                self._has_warned_missing_epsilon = True
 
-            if has_recon or has_vt:
+            if has_recon or has_vt or has_geometry:
                 # 重新计算当前 obs 的 latent (带梯度)
                 vt2, z2, mu_z2, logstd_z2 = ac.encoder(obs_b)
                 losses = []
                 obs_recon_loss = None
                 vt_recon_loss = None
+                geometry_loss = None
 
                 # 1. 重构损失
                 if has_recon:
-                    next_hat = ac.decoder(vt2, z2)
+                    if getattr(ac, 'cvae_type', 'cvae') == 'dpcvae':
+                        next_hat = ac.decoder(obs_b, z2)
+                    else:
+                        next_hat = ac.decoder(vt2, z2)
+                        
                     recon = F.smooth_l1_loss(next_hat, next_obs_b, beta=0.05)
                     losses.append(self.recon_weight * recon)
                     obs_recon_loss = recon.item()
@@ -214,10 +263,25 @@ class PPO_CVAE:
                 kl = 0.5 * torch.sum(torch.exp(2.0 * logstd_z2) + mu_z2.pow(2) - 1.0 - 2.0 * logstd_z2, dim=-1).mean()
                 cvae_kl_loss = kl.item()
                 losses.append(self.kl_weight * kl)
-
-                # [REMOVED] Z Smoothness Loss
-                # 原因：Mini-batch 是乱序的，无法得知 next_obs_b 对应的是时间序列上的下一帧。
-                # 此外，next_obs_b 可能是重构目标（维度不匹配 Encoder），强行 Encode 会报错。
+                
+                # 4. [NEW] Geometry Preserving Loss (Isometric Mapping)
+                if has_geometry:
+                    # [OPTIMIZATION] 随机采样以避免 O(N^2) 计算
+                    batch_size = mu_z2.shape[0]
+                    max_samples = 1024 # 限制采样数
+                    
+                    if batch_size > max_samples:
+                        # 随机打乱并取前 max_samples 个
+                        perm = torch.randperm(batch_size, device=self.device)[:max_samples]
+                        sample_mu_z = mu_z2[perm]
+                        sample_eps = epsilon_b[perm]
+                    else:
+                        sample_mu_z = mu_z2
+                        sample_eps = epsilon_b
+                        
+                    geo_loss = self.geometry_preserving_loss(sample_mu_z, sample_eps)
+                    losses.append(self.geometry_weight * geo_loss)
+                    geometry_loss = geo_loss.item()
 
                 # 总损失回传
                 cvae_loss = sum(losses)
@@ -232,6 +296,10 @@ class PPO_CVAE:
                 self.last_vt_recon_loss = vt_recon_loss
                 self.last_obs_recon_loss = obs_recon_loss
                 self.last_cvae_kl_loss = cvae_kl_loss
+                
+                # [MODIFIED] 更新几何损失记录 (如果本 batch 有值)
+                if geometry_loss is not None:
+                    self.last_geometry_loss = geometry_loss
 
         num_updates = self.num_learning_epochs * self.num_mini_batches
         mean_value_loss     /= num_updates

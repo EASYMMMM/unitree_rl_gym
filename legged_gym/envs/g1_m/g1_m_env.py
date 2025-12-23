@@ -2,17 +2,117 @@ from legged_gym.envs.base.legged_robot import LeggedRobot
 from isaacgym.torch_utils import *
 from isaacgym import gymtorch, gymapi, gymutil
 import torch
+import numpy as np
 from legged_gym.my_rl.actor_critic_cvae import ActorCriticCVAE
 
 class G1_mRobot(LeggedRobot):
     def __init__(self, *args,  **kwargs):
+        # [FIX] 将变量初始化提到 super().__init__ 之前
+        # 避免 super().__init__ -> _init_buffers 计算出的值被后续的 None 覆盖
+        self.payloads = None 
+        self.motor_strengths = None
+        self.dynamics_params_buf = None 
+
         super().__init__(*args, **kwargs)
+        
         self.obs_stack_n = self.cfg.env.obs_stack_n
         self.priv_obs_stack_n = self.cfg.env.priv_obs_stack_n
         self._obs_stack_buf = None
         self._priv_stack_buf = None
+        
+        # [REMOVED] 下面这几行被移到了 super 之前，防止覆盖
+        # self.payloads = None 
+        # self.motor_strengths = None
+        # self.dynamics_params_buf = None 
+        
         if self.headless == False:
             self._init_camera()
+
+    # ----------------------------------------------------------------------
+    # [NEW] 核心修改 1: 重写以捕获并存储 额外负载(Mass)
+    # ----------------------------------------------------------------------
+    def _process_rigid_body_props(self, props, env_id):
+        # 1. 初始化存储容器 (仅在第0个环境时执行一次)
+        if env_id == 0:
+            self.payloads = torch.zeros(self.num_envs, dtype=torch.float, device=self.device, requires_grad=False)
+            
+        # 2. 应用随机化
+        if self.cfg.domain_rand.randomize_base_mass:
+            rng = self.cfg.domain_rand.added_mass_range
+            added_mass = np.random.uniform(rng[0], rng[1])
+            props[0].mass += added_mass
+            
+            # 3. 记录真值
+            self.payloads[env_id] = added_mass
+            
+        return props
+
+    # ----------------------------------------------------------------------
+    # [NEW] 核心修改 2: 支持 电机参数(Dof Props) 修改与存储
+    # ----------------------------------------------------------------------
+    def _process_dof_props(self, props, env_id):
+        # 1. 务必先调用父类方法，处理 soft limits 等关键逻辑
+        props = super()._process_dof_props(props, env_id)
+        
+        # 2. 初始化存储容器 [num_envs, 2] -> (friction, damping)
+        if env_id == 0:
+            self.motor_strengths = torch.zeros(self.num_envs, 2, dtype=torch.float, device=self.device, requires_grad=False)
+
+        # 3. 应用电机参数随机化
+        if self.cfg.domain_rand.randomize_motor_props:
+            f_rng = self.cfg.domain_rand.motor_friction_range
+            d_rng = self.cfg.domain_rand.motor_damping_range
+            
+            # 采样随机值
+            rand_f = np.random.uniform(f_rng[0], f_rng[1])
+            rand_d = np.random.uniform(d_rng[0], d_rng[1])
+            
+            # 应用到所有关节
+            for i in range(len(props)):
+                props["friction"][i] = rand_f
+                props["damping"][i] = rand_d
+                
+            # 记录真值
+            self.motor_strengths[env_id, 0] = rand_f
+            self.motor_strengths[env_id, 1] = rand_d
+        
+        return props
+
+    # ----------------------------------------------------------------------
+    # [NEW] 核心修改 3: 缓存机制 - 只计算一次并缓存
+    # ----------------------------------------------------------------------
+    def _update_dynamics_params_buf(self):
+        """在初始化结束后调用一次，计算并缓存归一化的 mu"""
+        # 1. 摩擦力 (Ground Friction)
+        # 修复 Device 问题：确保在 GPU 上
+        if hasattr(self, 'friction_coeffs'):
+            friction = self.friction_coeffs.view(-1).to(self.device)
+            f_min, f_max = self.cfg.domain_rand.friction_range
+            norm_friction = (friction - f_min) / (f_max - f_min + 1e-6)
+        else:
+            norm_friction = torch.zeros(self.num_envs, device=self.device)
+
+        # 2. 负载质量 (Payload Mass)
+        if self.payloads is not None:
+            mass = self.payloads.view(-1).to(self.device)
+            m_min, m_max = self.cfg.domain_rand.added_mass_range
+            norm_mass = (mass - m_min) / (m_max - m_min + 1e-6)
+        else:
+            norm_mass = torch.zeros(self.num_envs, device=self.device)
+
+        # 3. 电机参数 (Motor Props)
+        if self.motor_strengths is not None and self.cfg.domain_rand.randomize_motor_props:
+            mf_min, mf_max = self.cfg.domain_rand.motor_friction_range
+            md_min, md_max = self.cfg.domain_rand.motor_damping_range
+            
+            norm_mf = (self.motor_strengths[:, 0].view(-1).to(self.device) - mf_min) / (mf_max - mf_min + 1e-6)
+            norm_md = (self.motor_strengths[:, 1].view(-1).to(self.device) - md_min) / (md_max - md_min + 1e-6)
+        else:
+            norm_mf = torch.zeros(self.num_envs, device=self.device)
+            norm_md = torch.zeros(self.num_envs, device=self.device)
+
+        # 拼接: [friction, mass, motor_f, motor_d] -> (num_envs, 4)
+        self.dynamics_params_buf = torch.stack([norm_friction, norm_mass, norm_mf, norm_md], dim=-1).clamp(0.0, 1.0)
 
     def _get_noise_scale_vec(self, cfg):
         noise_vec = torch.zeros_like(self.obs_buf[0])
@@ -40,6 +140,8 @@ class G1_mRobot(LeggedRobot):
     def _init_buffers(self):
         super()._init_buffers()
         self._init_foot()
+        # [NEW] 初始化完成后，立刻计算并缓存 dynamics params
+        self._update_dynamics_params_buf()
 
     def update_feet_state(self):
         self.gym.refresh_rigid_body_state_tensor(self.sim)
@@ -128,6 +230,12 @@ class G1_mRobot(LeggedRobot):
        
         if self.add_noise:
             self.obs_buf += (2 * torch.rand_like(self.obs_buf) - 1) * self.noise_scale_vec
+        
+        # ----------------------------------------------------------------------
+        # [NEW] 核心修改 4: 将归一化的动力学参数传出
+        # 优化: 直接使用缓存，零计算开销
+        # ----------------------------------------------------------------------
+        self.extras['dynamic_params'] = self.dynamics_params_buf
 
     def compute_recon_obs(self):
         recon_obs = torch.cat((self.base_ang_vel * self.obs_scales.ang_vel,

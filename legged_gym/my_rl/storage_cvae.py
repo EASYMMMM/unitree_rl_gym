@@ -18,9 +18,11 @@ class RolloutStorageCVAE:
             self.action_mean = None
             self.action_sigma = None
             self.hidden_states = None
-            # NEW
+            # CVAE Specific
             self.next_observations = None   # [N, obs_dim] (o_{t+1} 或 Δo)
             self.vt_target = None           # [N, vt_dim]  (可选)
+            # [NEW] Dynamics Params (DPCVAE) -> Renamed to avoid confusion with mu
+            self.dynamic_params = None      # [N, epsilon_dim] (e.g. 4 dim)
 
         def clear(self):
             self.__init__()
@@ -58,12 +60,15 @@ class RolloutStorageCVAE:
         self.values = torch.zeros(T, N, 1, device=self.device)
         self.returns = torch.zeros(T, N, 1, device=self.device)
         self.advantages = torch.zeros(T, N, 1, device=self.device)
-        self.mu = torch.zeros(T, N, *actions_shape, device=self.device)
-        self.sigma = torch.zeros(T, N, *actions_shape, device=self.device)
+        self.mu = torch.zeros(T, N, *actions_shape, device=self.device)    # PPO Action Mean (保持 mu 不变)
+        self.sigma = torch.zeros(T, N, *actions_shape, device=self.device) # PPO Action Std
 
-        # NEW: CVAE 需要的
+        # CVAE / DPCVAE 需要的
         self.next_observations = torch.zeros(T, N, num_recon_observations, device=self.device)  # o_{t+1} 或 Δo
-        self.vt_targets = None  # 惰性创建（直到第一次 add_transitions 带来了 vt_target）
+        self.vt_targets = None  # 惰性创建
+        
+        # [NEW] Dynamics Params Buffer (惰性创建)
+        self.dynamic_params_buf = None
 
         self.num_transitions_per_env = T
         self.num_envs = N
@@ -89,7 +94,8 @@ class RolloutStorageCVAE:
         self.mu[self.step].copy_(transition.action_mean)
         self.sigma[self.step].copy_(transition.action_sigma)
         self._save_hidden_states(transition.hidden_states)
-        # NEW: 额外存
+        
+        # CVAE Specific
         self.next_observations[self.step].copy_(transition.next_observations)
         if transition.vt_target is not None:
             if self.vt_targets is None:
@@ -99,6 +105,20 @@ class RolloutStorageCVAE:
                                               device=self.device,
                                               dtype=transition.vt_target.dtype)
             self.vt_targets[self.step].copy_(transition.vt_target)
+        
+        # [NEW] Store Dynamics Params
+        if transition.dynamic_params is not None:
+            if self.dynamic_params_buf is None:
+                # 第一次遇到 dynamic_params 时初始化 buffer
+                epsilon_dim = transition.dynamic_params.shape[-1]
+                self.dynamic_params_buf = torch.zeros(
+                    self.num_transitions_per_env, 
+                    self.num_envs, 
+                    epsilon_dim, 
+                    device=self.device,
+                    dtype=torch.float32
+                )
+            self.dynamic_params_buf[self.step].copy_(transition.dynamic_params)
 
         self.step += 1
 
@@ -159,13 +179,18 @@ class RolloutStorageCVAE:
         returns = self.returns.flatten(0, 1)                                   # [T*N, 1]
         old_actions_log_prob = self.actions_log_prob.flatten(0, 1)             # [T*N, 1]
         advantages = self.advantages.flatten(0, 1)                             # [T*N, 1]
-        old_mu = self.mu.flatten(0, 1)                                         # [T*N, act_dim]
+        old_mu = self.mu.flatten(0, 1)                                         # [T*N, act_dim] (PPO Action Mean)
         old_sigma = self.sigma.flatten(0, 1)                                   # [T*N, act_dim]
 
-        # NEW: next_obs / vt_targets 可能在 CPU，也可能在 GPU
+        # NEW: next_obs / vt_targets / dynamic_params 可能在 CPU，也可能在 GPU
         next_obs_flat = self.next_observations.flatten(0, 1)                   # [T*N, obs_dim]
+        
         has_vt = self.vt_targets is not None
         vt_flat = (self.vt_targets.flatten(0, 1) if has_vt else None)          # [T*N, vt_dim] or None
+
+        # [NEW] Flatten Dynamics Params (Renamed to epsilon)
+        has_epsilon = self.dynamic_params_buf is not None
+        epsilon_flat = (self.dynamic_params_buf.flatten(0, 1) if has_epsilon else None)  # [T*N, epsilon_dim] or None
 
         for _ in range(num_epochs):
             # 每个 epoch 重新洗牌（更稳定）
@@ -179,9 +204,7 @@ class RolloutStorageCVAE:
                 mb = indices[start:end]
 
                 # ---- 取出 batch；保证张量最终在 self.device（通常是 GPU）----
-                # 观测/优势等主干张量通常在 GPU；如果 indices 在 CPU，就再转一次
                 if observations.device != idx_device:
-                    # 这种情况少见（通常 observations 和 idx_device 都是 cuda），留个保险
                     mb_gpu = mb.to(observations.device)
                 else:
                     mb_gpu = mb
@@ -196,7 +219,7 @@ class RolloutStorageCVAE:
                 old_mu_batch = old_mu[mb_gpu]
                 old_sigma_batch = old_sigma[mb_gpu]
 
-                # next_obs / vt：可能在 CPU，按需搬到 self.device
+                # next_obs / vt / epsilon：可能在 CPU，按需搬到 self.device
                 next_obs_batch = next_obs_flat[mb]
                 if next_obs_batch.device != self.device:
                     next_obs_batch = next_obs_batch.to(self.device, non_blocking=True)
@@ -208,13 +231,21 @@ class RolloutStorageCVAE:
                 else:
                     vt_tgt_batch = None
 
+                # [NEW] Yield epsilon_batch
+                if has_epsilon:
+                    epsilon_batch = epsilon_flat[mb]
+                    if epsilon_batch.device != self.device:
+                        epsilon_batch = epsilon_batch.to(self.device, non_blocking=True)
+                else:
+                    epsilon_batch = None
+
                 yield (obs_batch, critic_obs_batch, actions_batch, target_values_batch, advantages_batch,
                     returns_batch, old_actions_log_prob_batch, old_mu_batch, old_sigma_batch,
                     (None, None), None,
-                    next_obs_batch, vt_tgt_batch)
+                    next_obs_batch, vt_tgt_batch, epsilon_batch) # [NEW] Added epsilon_batch
 
 
-    # -------- RNN mini-batch（与原版一致，末尾多两个项）--------
+    # -------- RNN mini-batch（与原版一致，末尾多三个项）--------
     def reccurent_mini_batch_generator(self, num_mini_batches, num_epochs=8):
         padded_obs_trajectories, trajectory_masks = split_and_pad_trajectories(self.observations, self.dones)
         if self.privileged_observations is not None:
@@ -222,11 +253,16 @@ class RolloutStorageCVAE:
         else:
             padded_critic_obs_trajectories = padded_obs_trajectories
 
-        # NEW：把 next_obs / vt_targets 也做相同处理，保证与 obs 对齐
+        # NEW：把 next_obs / vt_targets / epsilon 也做相同处理
         padded_next_obs_trajectories, _ = split_and_pad_trajectories(self.next_observations, self.dones)
+        
         has_vt = self.vt_targets is not None
         if has_vt:
             padded_vt_trajectories, _ = split_and_pad_trajectories(self.vt_targets, self.dones)
+
+        has_epsilon = self.dynamic_params_buf is not None
+        if has_epsilon:
+            padded_epsilon_trajectories, _ = split_and_pad_trajectories(self.dynamic_params_buf, self.dones)
 
         mini_batch_size = self.num_envs // num_mini_batches
         for ep in range(num_epochs):
@@ -245,9 +281,11 @@ class RolloutStorageCVAE:
                 masks_batch = trajectory_masks[:, first_traj:last_traj]
                 obs_batch = padded_obs_trajectories[:, first_traj:last_traj]
                 critic_obs_batch = padded_critic_obs_trajectories[:, first_traj:last_traj]
-                # NEW：对齐后的 next_obs / vt
+                
+                # NEW
                 next_obs_batch = padded_next_obs_trajectories[:, first_traj:last_traj]
                 vt_tgt_batch = (padded_vt_trajectories[:, first_traj:last_traj] if has_vt else None)
+                epsilon_batch = (padded_epsilon_trajectories[:, first_traj:last_traj] if has_epsilon else None)
 
                 actions_batch = self.actions[:, start:stop]
                 old_mu_batch = self.mu[:, start:stop]
@@ -257,7 +295,7 @@ class RolloutStorageCVAE:
                 values_batch = self.values[:, start:stop]
                 old_actions_log_prob_batch = self.actions_log_prob[:, start:stop]
 
-                # hidden states（与原版一致）
+                # hidden states
                 last_was_done = last_was_done.permute(1, 0)
                 hid_a_batch = [saved.permute(2, 0, 1, 3)[last_was_done][first_traj:last_traj].transpose(1, 0).contiguous()
                                for saved in self.saved_hidden_states_a] if self.saved_hidden_states_a is not None else None
@@ -269,6 +307,6 @@ class RolloutStorageCVAE:
                 yield (obs_batch, critic_obs_batch, actions_batch, values_batch, advantages_batch, returns_batch,
                        old_actions_log_prob_batch, old_mu_batch, old_sigma_batch,
                        (hid_a_batch, hid_c_batch), masks_batch,
-                       next_obs_batch, vt_tgt_batch)
+                       next_obs_batch, vt_tgt_batch, epsilon_batch) # [NEW] Added epsilon_batch
 
                 first_traj = last_traj
