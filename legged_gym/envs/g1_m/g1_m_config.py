@@ -53,8 +53,8 @@ class G1_mRoughCfg( LeggedRobotCfg ):
         action_scale = 0.15 # 0.25
         decimation = 4
     class asset( LeggedRobotCfg.asset ):
-        file = '{LEGGED_GYM_ROOT_DIR}/resources/robots/g1_description/g1_12dof_perturbed.urdf'
-        # file = '{LEGGED_GYM_ROOT_DIR}/resources/robots/g1_description/g1_12dof.urdf'
+        # file = '{LEGGED_GYM_ROOT_DIR}/resources/robots/g1_description/g1_12dof_perturbed.urdf'
+        file = '{LEGGED_GYM_ROOT_DIR}/resources/robots/g1_description/g1_12dof.urdf'
         name = "g1"
         foot_name = "ankle_roll"
         penalize_contacts_on = ["hip", "knee"]
@@ -104,6 +104,7 @@ class G1_mRoughCfgPPO( LeggedRobotCfgPPO ):
         entropy_coef = 0.01
         learning_rate = 3e-4
         cvae_learning_rate = 1e-4
+        z_smooth_weight = 3e-4
         gamma = 0.99
         lam = 0.95
         recon_weight = 5.000

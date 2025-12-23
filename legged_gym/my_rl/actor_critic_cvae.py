@@ -60,7 +60,6 @@ class PolicyHead(nn.Module):
         # [NEW] 如果传入的 obs 维度大于预期（全量历史），则在此处裁剪
         # 预期维度为 num_single_obs + 2 (相位)
         obs_in = obs
-        # z = z*0.5
         if self.num_single_obs is not None:
              expected_dim = self.num_single_obs + 2
              if obs.shape[-1] > expected_dim:

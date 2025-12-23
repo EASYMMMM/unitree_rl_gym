@@ -26,8 +26,9 @@ class PPO_CVAE:
                  recon_weight=1.0,
                  kl_weight=1e-3,
                  vt_weight=1.0,
+                 z_smooth_weight=0.0,
                  device='cpu',
-                 num_recon_observations = 29
+                 num_recon_observations=29
                  ):
         self.device = device
         self.desired_kl = desired_kl
@@ -39,14 +40,15 @@ class PPO_CVAE:
         self.transition = RolloutStorageCVAE.Transition()
         self.storage = None
 
-       # optimizer
+        # optimizer
         rl_params = []
         rl_params += list(self.actor_critic.policy_cvae.parameters())  # 只更新策略头
         rl_params += list(self.actor_critic.critic.parameters())       # 价值网络
         rl_params += [self.actor_critic.std]                           # 动作噪声
         self.optim_rl = optim.Adam(rl_params, lr=learning_rate)
+
         cvae_params = itertools.chain(self.actor_critic.encoder.parameters(),
-                                    self.actor_critic.decoder.parameters())
+                                      self.actor_critic.decoder.parameters())
         self.optim_cvae = optim.Adam(cvae_params, lr=cvae_learning_rate)
 
         # PPO params
@@ -69,7 +71,7 @@ class PPO_CVAE:
     def init_storage(self, num_envs, num_steps, actor_obs_shape, critic_obs_shape, action_shape):
         self.storage = RolloutStorageCVAE(num_envs, num_steps,
                                           actor_obs_shape, critic_obs_shape, action_shape,
-                                          self.device, num_recon_observations = self.num_recon_observations)
+                                          self.device, num_recon_observations=self.num_recon_observations)
 
     def test_mode(self):  self.actor_critic.test()
     def train_mode(self): self.actor_critic.train()
@@ -92,6 +94,7 @@ class PPO_CVAE:
         if 'time_outs' in infos:
             self.transition.rewards += self.gamma * torch.squeeze(
                 self.transition.values * infos['time_outs'].unsqueeze(1).to(self.device), 1)
+
         # NEW
         if next_obs is not None:
             self.transition.next_observations = next_obs
@@ -110,6 +113,11 @@ class PPO_CVAE:
         mean_value_loss, mean_surrogate_loss = 0.0, 0.0
         self.last_cvae_loss = None
         self.last_vt_recon_loss = None
+        self.last_obs_recon_loss = None
+        self.last_cvae_kl_loss = None
+        
+        # [REMOVED] last_z_smooth_loss because mini-batch is shuffled
+
         if self.actor_critic.is_recurrent:
             generator = self.storage.reccurent_mini_batch_generator(self.num_mini_batches, self.num_learning_epochs)
         else:
@@ -119,8 +127,8 @@ class PPO_CVAE:
         std_param = ac.std  # [act_dim]
 
         for (obs_b, critic_obs_b, actions_b, target_v_b, adv_b, ret_b,
-            old_logp_b, old_mu_b, old_sigma_b, hid_b, masks_b,
-            next_obs_b, vt_tgt_b) in generator:
+             old_logp_b, old_mu_b, old_sigma_b, hid_b, masks_b,
+             next_obs_b, vt_tgt_b) in generator:
 
             # ========= (A) Update PPO  =========
             vt, z, mu_z, logstd_z = ac.encoder(obs_b)    # 建图，但随即对 PPO 阶段阻断
@@ -128,7 +136,7 @@ class PPO_CVAE:
             z  = z.detach()
             mu_z = mu_z.detach()
 
-            mu = ac.policy_cvae(obs_b, vt, mu_z) # 只对 policy head 建图
+            mu = ac.policy_cvae(obs_b, vt, mu_z)  # 只对 policy head 建图
             std = std_param.expand_as(mu)
             std = std.clamp_min(1e-3)
             dist = torch.distributions.Normal(mu, std)
@@ -171,8 +179,8 @@ class PPO_CVAE:
             self.optim_rl.zero_grad(set_to_none=True)
             rl_loss.backward()
             nn.utils.clip_grad_norm_(list(ac.policy_cvae.parameters()) +
-                                    list(ac.critic.parameters()) + [ac.std],
-                                    self.max_grad_norm)
+                                     list(ac.critic.parameters()) + [ac.std],
+                                     self.max_grad_norm)
             self.optim_rl.step()
 
             mean_value_loss     += v_loss.item()
@@ -183,37 +191,44 @@ class PPO_CVAE:
             has_vt    = vt_tgt_b is not None
 
             if has_recon or has_vt:
-                vt2, z2, mu_z2, logstd_z2 = ac.encoder(obs_b)  # 新的图B
+                # 重新计算当前 obs 的 latent (带梯度)
+                vt2, z2, mu_z2, logstd_z2 = ac.encoder(obs_b)
                 losses = []
                 obs_recon_loss = None
                 vt_recon_loss = None
 
+                # 1. 重构损失
                 if has_recon:
                     next_hat = ac.decoder(vt2, z2)
-                    # recon = F.mse_loss(next_hat, next_obs_b)
-                    # FIXME: Huber loss 更鲁棒
                     recon = F.smooth_l1_loss(next_hat, next_obs_b, beta=0.05)
                     losses.append(self.recon_weight * recon)
                     obs_recon_loss = recon.item()
+                
+                # 2. 速度估计损失
                 if has_vt:
                     vt_loss = F.mse_loss(vt2, vt_tgt_b)
                     losses.append(self.vt_weight * vt_loss)
                     vt_recon_loss = vt_loss.item()
 
-                # KL 始终可算（若你想只在 has_recon 时算，也可加条件）
+                # 3. KL 散度
                 kl = 0.5 * torch.sum(torch.exp(2.0 * logstd_z2) + mu_z2.pow(2) - 1.0 - 2.0 * logstd_z2, dim=-1).mean()
                 cvae_kl_loss = kl.item()
                 losses.append(self.kl_weight * kl)
 
+                # [REMOVED] Z Smoothness Loss
+                # 原因：Mini-batch 是乱序的，无法得知 next_obs_b 对应的是时间序列上的下一帧。
+                # 此外，next_obs_b 可能是重构目标（维度不匹配 Encoder），强行 Encode 会报错。
+
+                # 总损失回传
                 cvae_loss = sum(losses)
 
                 self.optim_cvae.zero_grad(set_to_none=True)
                 cvae_loss.backward()
                 nn.utils.clip_grad_norm_(itertools.chain(ac.encoder.parameters(), ac.decoder.parameters()),
-                                        self.max_grad_norm)
+                                         self.max_grad_norm)
                 self.optim_cvae.step()
+
                 self.last_cvae_loss = cvae_loss.item()
-                # 速度重构损失优先记录vt_loss（如果有），否则记录recon（如果有）
                 self.last_vt_recon_loss = vt_recon_loss
                 self.last_obs_recon_loss = obs_recon_loss
                 self.last_cvae_kl_loss = cvae_kl_loss
@@ -223,5 +238,3 @@ class PPO_CVAE:
         mean_surrogate_loss /= num_updates
         self.storage.clear()
         return mean_value_loss, mean_surrogate_loss
-
-

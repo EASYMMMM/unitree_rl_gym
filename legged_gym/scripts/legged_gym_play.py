@@ -112,20 +112,6 @@ def play(args):
         print("[WARNING] Large scale data collection detected. Disabling video recording to improve performance.")
         video_record = False
 
-    # [NEW] Headless Recording Setup
-    camera_handle = None
-    if video_record and args.headless:
-        print("Headless mode detected with video recording. Creating offscreen camera...")
-        camera_props = gymapi.CameraProperties()
-        camera_props.width = 1920
-        camera_props.height = 1080
-        # Attach to the first environment
-        camera_handle = env.gym.create_camera_sensor(env.envs[0], camera_props)
-        # Set initial view
-        pos = gymapi.Vec3(*camera_position)
-        target = gymapi.Vec3(*(camera_position + camera_direction))
-        env.gym.set_camera_location(camera_handle, env.envs[0], pos, target)
-
     collected_data = {
         'obs': [],
         'actions': [],
@@ -197,41 +183,16 @@ def play(args):
         if video_record:
             if i % 2 == 0:
                 filename = os.path.join(VIDEO_PATH, f"frame_{img_idx}.png")
-                
-                # [NEW] Headless support
-                if args.headless:
-                    # Update Camera Position if moving
-                    if MOVE_CAMERA:
-                        camera_position += camera_vel * env.dt
-                        pos = gymapi.Vec3(*camera_position)
-                        target = gymapi.Vec3(*(camera_position + camera_direction))
-                        env.gym.set_camera_location(camera_handle, env.envs[0], pos, target)
-                    
-                    # Render and fetch
-                    env.gym.render_all_camera_sensors(env.sim)
-                    img = env.gym.get_camera_image(env.sim, env.envs[0], camera_handle, gymapi.IMAGE_COLOR)
-                    
-                    # Process Image: (Flattened) -> (H, W, 4) -> (H, W, 3)
-                    # gymapi.IMAGE_COLOR returns RGBA
-                    img = img.reshape(1080, 1920, 4) # Match camera_props above
-                    img = img[:, :, :3] # RGBA -> RGB
-                    
-                    # Save
-                    imageio.imwrite(filename, img)
-                    frames.append(filename)
-                else:
-                    # Standard viewer recording
-                    env.gym.write_viewer_image_to_file(env.viewer, filename)
-                    frames.append(filename)
-                
+                # [REVERTED] 直接使用 viewer 截图，不进行 headless 检测
+                env.gym.write_viewer_image_to_file(env.viewer, filename)
+                frames.append(filename)
                 img_idx += 1
 
-        if not args.headless:
-            if MOVE_CAMERA:
-                camera_position += camera_vel * env.dt
-                env.set_camera(camera_position, camera_position + camera_direction)
-            if FOLLOWED_CAMERA:
-                env.set_follow_camera()
+        if MOVE_CAMERA:
+            camera_position += camera_vel * env.dt
+            env.set_camera(camera_position, camera_position + camera_direction)
+        if FOLLOWED_CAMERA:
+            env.set_follow_camera()
 
         if  0 < i < stop_rew_log:
             if infos["episode"]:
@@ -268,8 +229,8 @@ def play(args):
     if video_record and len(frames) > 0:
         video_file = os.path.join(VIDEO_PATH, 'play.mp4')
         try:
-            # Re-read frames to ensure format consistency
-            imgs = [imageio.imread(f) for f in frames]
+            # [Fix] 使用 v2.imread 消除警告
+            imgs = [imageio.v2.imread(f) for f in frames]
             imageio.mimsave(video_file, imgs, fps=25)
             print(f"[INFO] 视频已保存到: {video_file}")
         except Exception as e:

@@ -205,6 +205,7 @@ class OnPolicyRunner_WB(OnPolicyRunner):
                 vt_recon_loss = getattr(self.alg, "last_vt_recon_loss", None)
                 obs_recon_loss = getattr(self.alg, "last_obs_recon_loss", None)
                 cvae_kl_loss = getattr(self.alg, "last_kl_loss", None)
+                cvae_z_smooth_loss = getattr(self.alg, "last_z_smooth_loss", None)
                 if cvae_loss is not None:
                     self.writer.add_scalar('Loss/cvae_loss', cvae_loss, it)
                 if vt_recon_loss is not None:
@@ -213,6 +214,8 @@ class OnPolicyRunner_WB(OnPolicyRunner):
                     self.writer.add_scalar('Loss/obs_recon_loss', obs_recon_loss, it)
                 if cvae_kl_loss is not None:
                     self.writer.add_scalar('Loss/cvae_kl_loss', cvae_kl_loss, it)
+                if cvae_z_smooth_loss is not None:
+                    self.writer.add_scalar('Loss/cvae_z_smooth_loss', cvae_z_smooth_loss, it)
                 self.log(locals())
             if it % self.save_interval == 0:
                 self.save(os.path.join(self.log_dir, f'model_{it}.pt'))
