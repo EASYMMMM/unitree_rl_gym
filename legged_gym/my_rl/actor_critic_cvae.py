@@ -68,9 +68,9 @@ class Decoder(nn.Module):
         elif cvae_type == 'dpcvae':
             if obs_dim is None:
                 raise ValueError("cvae_type='dpcvae' requires obs_dim")
-            # 如果指定了 num_decoder_obs，则输入维度为 num_decoder_obs + 2 (相位)
+            # 如果指定了 num_decoder_obs，则输入维度为 num_decoder_obs，Decoder不输入相位
             if num_decoder_obs is not None:
-                cond_dim = num_decoder_obs + 2 
+                cond_dim = num_decoder_obs 
             else:  # 否则使用全量观测维度
                 cond_dim = obs_dim
             input_dim = cond_dim + z_dim      
@@ -87,10 +87,14 @@ class Decoder(nn.Module):
         if self.cvae_type == 'dpcvae':
             # [DPCVAE] x is observations, apply cropping if needed
             if self.num_decoder_obs is not None:
-                 expected_dim = self.num_decoder_obs + 2 # 假设 +2 是 sin/cos phase
+                 expected_dim = self.num_decoder_obs 
                  if x.shape[-1] > expected_dim:
                      # 取前 num_decoder_obs 维 (单帧) + 后 2 维 (相位)
-                     condition = torch.cat([x[:, :self.num_decoder_obs], x[:, -2:]], dim=-1)
+                     condition = x[:, :self.num_decoder_obs] 
+            condition = condition.clone()
+            if condition.shape[-1] > 8:
+                condition[:, 6:9] = 0.0  # 抹掉 commands 信息
+                      
         
         return self.net(torch.cat([condition, z], dim=-1))
 

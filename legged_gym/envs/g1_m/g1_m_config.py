@@ -102,7 +102,7 @@ class G1_mRoughCfgPPO( LeggedRobotCfgPPO ):
         critic_hidden_dims = [1024, 512]
         activation = 'elu'
         # CVAE
-        z_dim = 16
+        z_dim = 5               # [MODIFIED] 从 16 降维到 5，更符合物理自由度
         encoder_hidden_dims = [1024, 512]
         decoder_hidden_dims = [512, 1024]
         rnn_type = 'lstm'
@@ -112,14 +112,20 @@ class G1_mRoughCfgPPO( LeggedRobotCfgPPO ):
         num_recon_observations = G1_mRoughCfg.env.num_recon_observations
         entropy_coef = 0.01
         learning_rate = 3e-4
-        cvae_learning_rate = 1e-4
+        cvae_learning_rate = 3e-4
         z_smooth_weight = 3e-4
         gamma = 0.99
         lam = 0.95
-        recon_weight = 5.000
-        geometry_weight = 0.5
-        vt_weight = 1.000
-        kl_weight = 0.001
+        
+        # [MODIFIED] 调整后的权重组合
+        recon_weight = 10.000    # [UP] 提高重构权重，防止后验坍塌
+        geometry_weight = 2.0    # [DOWN] 降低几何权重，防止过拟合
+        vt_weight = 0.5000
+        
+        # [NEW] KL Annealing Params
+        kl_weight = 0.0001       # Start value (初始值)
+        kl_target = 0.0005         # End value (目标值)
+        kl_anneal_iters = 1000   # 退火持续步数
     class runner( LeggedRobotCfgPPO.runner ):
         save_interval = 200
         policy_class_name = "ActorCriticCVAE"

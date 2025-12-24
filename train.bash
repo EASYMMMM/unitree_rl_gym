@@ -33,8 +33,9 @@ python legged_gym/scripts/legged_gym_play.py --task=g1_m --num_envs=12  --load_r
 # DPCVAE g1_m training
 python legged_gym/scripts/train.py --task=g1_m  --num_envs=4096 --max_iterations=2500 --headless  --run_name=CVAE_dpcvae
 # DPCVAE g1_m check
-python legged_gym/scripts/legged_gym_play.py --task=g1_m --num_envs=12  --load_run=Dec23_19-05-57_CVAE_dpcvae --record_video
-
+python legged_gym/scripts/legged_gym_play.py --task=g1_m --num_envs=12  --load_run=Dec24_14-01-54_CVAE_dpcvae --record_video
+# DPCVAE g1_m 结果可视化
+python legged_gym/scripts/play_cvae_vis.py --task=g1_m --num_envs=100 --load_run=Dec24_14-01-54_CVAE_dpcvae
 
 # Continual RL中 采集真机数据
 # Collect Real World Data
